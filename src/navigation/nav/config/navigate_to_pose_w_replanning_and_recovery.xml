@@ -1,0 +1,48 @@
+<!--
+  This Behavior Tree replans the global path periodically at 1 Hz and it also has
+  recovery actions specific to planning / control as well as general system issues.
+  This will be continuous if a kinematically valid planner is selected.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <!-- 1 Hz 重新规划，并在规划完成后执行 MINCO 平滑 -->
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputeAndSmoothPath">
+            <!-- RecoveryNode 的主执行分支 -->
+            <Sequence name="ComputeAndSmoothSequence">
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+              <SmoothPath unsmoothed_path="{path}" smoothed_path="{path}" smoother_id="minco_smoother"/>
+            </Sequence>
+            <!-- 规划或平滑失败后的恢复操作 -->
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+
+        <!-- 跟踪平滑后的路径 -->
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+
+      <!-- 总体导航恢复逻辑 -->
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+
+          <Spin spin_dist="1.57"/>
+
+          <Wait wait_duration="5"/>
+
+          <BackUp backup_dist="0.30" backup_speed="0.05"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
