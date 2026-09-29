@@ -26,12 +26,6 @@ def generate_launch_description():
         )
     )
 
-    livox_ros_driver2 = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('livox_ros_driver2')+"/launch/msg_MID360_launch.py"
-        )
-    )
-
     pointlio = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             get_package_share_directory('point_lio_with_grid_map')+"/launch/point_lio.launch.py"
@@ -134,12 +128,6 @@ def generate_launch_description():
         )
     )
 
-    rm_serial = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('rm_serial')+"/launch/rm_serial.launch.py"
-        )
-    )
-
     region_behavior = Node(
         package="region_behavior",
         executable="region_behavior_node",
@@ -149,21 +137,19 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            # rm_serial,
             pointlio,
             container,
             modify,
-            # gicp,      
-            # livox_ros_driver2,
+            # gicp,
              start_nav2_rviz,
              seg,
              load_map_server,
              p_to_l,
              fake_baselink,
             #  region_behavior,
-             TimerAction(
-                period=3.0,
-                actions=[nav2],
-            )
+            #  TimerAction(
+            #     period=3.0,
+            #     actions=[nav2],
+            # )
         ]
     )

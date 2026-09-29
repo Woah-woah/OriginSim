@@ -13,7 +13,6 @@
 
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include "referee_msg/msg/referee.hpp"
 
 class FakeBaselink : public rclcpp::Node
 {
@@ -42,16 +41,9 @@ public:
         cmd_vel_sub = this->create_subscription<geometry_msgs::msg::Twist>(
             cmd_vel_topic_name,1,std::bind(&FakeBaselink::cmd_vel_callback,this,std::placeholders::_1)
         );
-        // local_plan_sub = this->create_subscription<nav_msgs::msg::Path>(
-        //     "/local_plan",1,std::bind(&FakeBaselink::local_plan_callback,this,std::placeholders::_1)
-        // );
 
         cmd_vel_after_pub = this->create_publisher<geometry_msgs::msg::Twist>(
             cmd_vel_after_topic_name,10
-        );
-
-        stop_chassis_sub = this->create_subscription<referee_msg::msg::Referee>(
-            "/Referee", 1, std::bind(&FakeBaselink::stop_chassis_callback, this, std::placeholders::_1)
         );
 
         pub_fake_timer = this->create_wall_timer(
@@ -88,25 +80,9 @@ public:
         ready = 1;
     }
 
-    void stop_chassis_callback(const referee_msg::msg::Referee::SharedPtr referee_msg)
-    {
-        should_stop = (referee_msg->head_status == 0);
-    }
 
     void cmd_vel_callback(const geometry_msgs::msg::Twist::SharedPtr cmd_vel)
     {
-        // if (local_plan_last.empty())
-        // {
-        //     return;
-        // }
-        geometry_msgs::msg::Twist cmd_vel_after;
-        if (should_stop) {
-            cmd_vel_after.angular.z = 0.0;
-            cmd_vel_after.linear.x = 0.0;
-            cmd_vel_after.linear.y = 0.0;
-            cmd_vel_after_pub->publish(cmd_vel_after);
-            return;
-        }
 
         geometry_msgs::msg::TransformStamped odom_to_base_link;
         try
@@ -115,60 +91,18 @@ public:
         }
         catch(...){}
 
-        // base_link_translation = odom_to_base_link.transform.translation;
-        // float x1 = odom_to_base_link.transform.translation.x;
-        // float y1 = odom_to_base_link.transform.translation.y;
-        // float x2 = local_plan_last[local_plan_last.size()-1].pose.position.x;
-        // float y2 = local_plan_last[local_plan_last.size()-1].pose.position.y;
-        // float base_link_to_last_point_distance = sqrt(pow(x1-x2,2)+pow(y1-y2,2));
-        // size_t index = local_plan_last.size() - 1;
-        // for (size_t i = 0; i < local_plan_last.size(); ++i)
-        // {
-        //     if (local_plan_last_distance[i] + forward_distance <= base_link_to_last_point_distance)
-        //     {
-        //         index = i;
-        //         break;
-        //     }
-        // }
-
-        // char log[1000];
-        // sprintf(log,"all: %d choose: %d",local_plan_last.size(),index);
-        // RCLCPP_INFO(this->get_logger(),log);
-
-        //fake_q = local_plan_last[index].pose.orientation;
+        geometry_msgs::msg::Twist cmd_vel_after;
 
         double base_link_angle = tf2::getYaw(odom_to_base_link.transform.rotation);
         double angle_diff = base_link_angle - tf2::getYaw(fake_q);
 
-
-        cmd_vel_after.angular.z = cmd_vel->angular.z ;
+        cmd_vel_after.angular.z = 0.0;
         cmd_vel_after.linear.x = cmd_vel->linear.x * cos(angle_diff) + cmd_vel->linear.y * sin(angle_diff);
         cmd_vel_after.linear.y = -cmd_vel->linear.x * sin(angle_diff) + cmd_vel->linear.y * cos(angle_diff);
 
         cmd_vel_after_pub->publish(cmd_vel_after);
         
     }
-
-    // void local_plan_callback(const nav_msgs::msg::Path::SharedPtr local_plan)
-    // {
-    //     if (local_plan->poses.empty())
-    //     {
-    //         return;
-    //     }
-
-    //     local_plan_last = std::vector<geometry_msgs::msg::PoseStamped>(local_plan->poses);
-
-    //     local_plan_last_distance.clear();
-    //     double x1 = local_plan_last[local_plan_last.size()-1].pose.position.x;
-    //     double y1 = local_plan_last[local_plan_last.size()-1].pose.position.y;
-    //     for (size_t i = 0; i < local_plan_last.size(); ++i)
-    //     {
-    //         double x2 = local_plan_last[i].pose.position.x;
-    //         double y2 = local_plan_last[i].pose.position.y;
-
-    //         local_plan_last_distance.push_back(sqrt(pow(x1-x2,2)+pow(y1-y2,2)));
-    //     }
-    // }
 
     void pub_fake_callback()
     {
@@ -205,7 +139,6 @@ private:
     std::int8_t ready;
 
     float forward_distance;
-    bool should_stop{false};
 
     geometry_msgs::msg::Quaternion fake_q;
     geometry_msgs::msg::Vector3 base_link_translation;
@@ -215,25 +148,11 @@ private:
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf2_broadcaster;
 
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub;
-    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr local_plan_sub;
-    rclcpp::Subscription<referee_msg::msg::Referee>::SharedPtr stop_chassis_sub;
 
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_after_pub;
 
     rclcpp::TimerBase::SharedPtr pub_fake_timer;
-
-    std::vector<geometry_msgs::msg::PoseStamped> local_plan_last;
-    std::vector<float> local_plan_last_distance;
 };
-
-// int main(int argc, char **argv)
-// {
-//     rclcpp::init(argc, argv);
-//     auto node = std::make_shared<FakeBaselink>("fake_baselink");
-//     rclcpp::spin(node);
-//     rclcpp::shutdown();
-//     return 0;
-// }
 
 #include "rclcpp_components/register_node_macro.hpp"
 RCLCPP_COMPONENTS_REGISTER_NODE(FakeBaselink)

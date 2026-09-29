@@ -68,6 +68,10 @@ def generate_launch_description():
             get_package_share_directory('bringup'), 'terrain_map', 'terrain.yaml'),
         'topology_yaml': os.path.join(
             get_package_share_directory('topology_global_planner'), 'config', 'topo.yaml'),
+        'default_nav_to_pose_bt_xml': os.path.join(
+            get_package_share_directory('nav'), 'config', 'navigate_to_pose_w_replanning_and_recovery.xml'),
+        'default_nav_through_poses_bt_xml': os.path.join(
+            get_package_share_directory('nav'), 'config', 'navigate_through_poses_w_replanning_and_recovery.xml')
     }
 
     configured_params = RewrittenYaml(
@@ -121,68 +125,6 @@ def generate_launch_description():
         executable='component_container',
         output='screen',
         parameters=[params_file, {'autostart': True}],
-    )
-
-    load_composable_nodes = LoadComposableNodes(
-        target_container='nav2_container',
-        composable_node_descriptions=[
-            ComposableNode(
-                package='nav2_controller',
-                plugin='nav2_controller::ControllerServer',
-                name='controller_server',
-                parameters=[configured_params],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')]),
-            ComposableNode(
-                package='nav2_smoother',
-                plugin='nav2_smoother::SmootherServer',
-                name='smoother_server',
-                parameters=[configured_params],
-                remappings=remappings),
-            ComposableNode(
-                package='nav2_planner',
-                plugin='nav2_planner::PlannerServer',
-                name='planner_server',
-                parameters=[configured_params],
-                remappings=remappings),
-            ComposableNode(
-                package='nav2_behaviors',
-                plugin='behavior_server::BehaviorServer',
-                name='behavior_server',
-                parameters=[configured_params],
-                remappings=remappings),
-            ComposableNode(
-                package='nav2_bt_navigator',
-                plugin='nav2_bt_navigator::BtNavigator',
-                name='bt_navigator',
-                parameters=[configured_params],
-                remappings=remappings),
-            ComposableNode(
-                package='nav2_waypoint_follower',
-                plugin='nav2_waypoint_follower::WaypointFollower',
-                name='waypoint_follower',
-                parameters=[configured_params],
-                remappings=remappings),
-            ComposableNode(
-                package='nav2_amcl',
-                plugin='nav2_amcl::AmclNode',
-                name='amcl',
-                parameters=[configured_params],
-                remappings=remappings),
-            ComposableNode(
-                package='nav2_velocity_smoother',
-                plugin='nav2_velocity_smoother::VelocitySmoother',
-                name='velocity_smoother',
-                parameters=[configured_params],
-                remappings=remappings +
-                           [('cmd_vel', 'cmd_vel_nav'), ('cmd_vel_smoothed', 'cmd_vel')]),
-            ComposableNode(
-                package='nav2_lifecycle_manager',
-                plugin='nav2_lifecycle_manager::LifecycleManager',
-                name='lifecycle_manager_navigation',
-                parameters=[{'use_sim_time': use_sim_time,
-                             'autostart': autostart,
-                             'node_names': lifecycle_nodes}]),
-        ],
     )
 
     load_nodes = GroupAction(
