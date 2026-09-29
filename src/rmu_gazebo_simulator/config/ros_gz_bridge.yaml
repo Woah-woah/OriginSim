@@ -1,0 +1,43 @@
+# mecanum plugin odometry
+- ros_topic_name: "/Odometry"
+  gz_topic_name: "/odometry"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: "GZ_TO_ROS"
+
+# JointStatePublisher publish
+- ros_topic_name: "/joint_states"
+  gz_topic_name: "/world/default/model/<robot_name>/joint_state"
+  ros_type_name: "sensor_msgs/msg/JointState"
+  gz_type_name: "gz.msgs.Model"
+  direction: "GZ_TO_ROS"
+
+- ros_topic_name: "/front_camera/image"
+  gz_topic_name: "/world/default/model/<robot_name>/link/front_industrial_camera/sensor/front_industrial_camera/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: "GZ_TO_ROS"
+
+# - ros_topic_name: "/rplidar_a2/scan"
+#   gz_topic_name: "/world/default/model/<robot_name>/link/front_rplidar_a2/sensor/front_rplidar_a2/scan"
+#   ros_type_name: "sensor_msgs/msg/LaserScan"
+#   gz_type_name: "gz.msgs.LaserScan"
+#   direction: "GZ_TO_ROS"
+
+- ros_topic_name: "/livox/lidar/pointcloud"
+  gz_topic_name: "/world/default/model/<robot_name>/link/livox_frame/sensor/mid360_lidar/scan/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "gz.msgs.PointCloudPacked"
+  direction: "GZ_TO_ROS"
+
+- ros_topic_name: "/livox/imu"
+  gz_topic_name: "/world/default/model/<robot_name>/link/livox_frame/sensor/mid360_imu/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: "GZ_TO_ROS"
+
+- ros_topic_name: "/front_camera/camera_info"
+  gz_topic_name: "/world/default/model/<robot_name>/link/front_industrial_camera/sensor/front_industrial_camera/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: "GZ_TO_ROS"

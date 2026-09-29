@@ -1,0 +1,11 @@
+regions:
+  - name: "Base_Heal"
+    active: true
+    points:
+      - {x: -1.5, y: -9.0}
+      - {x: -1.5, y: -6.88}
+      - {x: 0.5 , y: -6.88}
+      - {x: 0.5 , y: -9.0}
+    effect:
+      target_key: "home"
+
