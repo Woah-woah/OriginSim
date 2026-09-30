@@ -10,7 +10,7 @@
     <xmacro_define_value name="global_initial_color" value="none" />
     <xmacro_define_value name="global_armor_sticker_type" value="num3" />
     <!--pb2025_sentry_robot model-->                                    
-    <model name="pb2025_sentry_robot">
+    <model name="pb2025_sentry_robot" canonical_link="aft_mapped">
     <!-- <model name="a"> -->
 
         <pose>0 0 -0.6 0 0 0</pose>

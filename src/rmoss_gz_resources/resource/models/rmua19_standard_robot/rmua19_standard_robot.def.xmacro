@@ -14,6 +14,13 @@
         <!-- gimbal_yaw->aft_mapped -->
 
 
+        <link name="base_footprint" />
+
+        <joint name="base_footprint_joint" type="fixed">
+            <parent>base_footprint</parent>
+            <child>aft_mapped</child>
+        </joint>
+
         <link name="base_link" />
 
         <joint name="aft_to_base_link" type="fixed">

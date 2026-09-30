@@ -6,6 +6,7 @@ from launch.actions import (
     AppendEnvironmentVariable,
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    SetEnvironmentVariable,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, TextSubstitution
@@ -14,6 +15,11 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_simulator = get_package_share_directory("rmu_gazebo_simulator")
+    xdg_runtime_dir = os.environ.get(
+        "XDG_RUNTIME_DIR", f"/tmp/runtime-{os.getuid()}"
+    )
+    os.makedirs(xdg_runtime_dir, mode=0o700, exist_ok=True)
+    os.chmod(xdg_runtime_dir, 0o700)
 
     world_sdf_path = LaunchConfiguration("world_sdf_path")
     gz_config_path = LaunchConfiguration("gz_config_path")
@@ -41,6 +47,11 @@ def generate_launch_description():
     append_enviroment_models = AppendEnvironmentVariable(
         name="GZ_SIM_RESOURCE_PATH",
         value=os.path.join(pkg_simulator, "resource", "models"),
+    )
+
+    set_xdg_runtime_dir = SetEnvironmentVariable(
+        name="XDG_RUNTIME_DIR",
+        value=xdg_runtime_dir,
     )
 
     # Launch Gazebo simulator
@@ -88,6 +99,7 @@ def generate_launch_description():
 
     ld.add_action(declare_world_sdf_path)
     ld.add_action(declare_gz_config_path)
+    ld.add_action(set_xdg_runtime_dir)
     ld.add_action(append_enviroment_worlds)
     ld.add_action(append_enviroment_models)
     ld.add_action(gazebo)

@@ -1,0 +1,1 @@
+pgrep -f "gz sim" | xargs -r kill -9
