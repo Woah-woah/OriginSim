@@ -1,0 +1,142 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version='1.7'>
+  <world name='default'>
+    <!-- Physics -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics">
+    </plugin>
+
+    <!-- Forwards simulation state to the GUI -->
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+
+    <!-- Processes user commands, like translate and create -->
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands">
+    </plugin>
+
+    <!-- Generates rendering sensor data -->
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu">
+    </plugin>
+
+    <light type='directional' name='direct_light'>
+      <visualize>false</visualize>
+      <cast_shadows>true</cast_shadows>
+      <pose>14.6 7.9 10 0 0 0</pose>
+      <diffuse>1.0 1.0 1.0 1</diffuse>
+      <specular>0.5 0.5 0.5 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>0 0 -1</direction>
+    </light>
+
+    <model name='rmuc_2026'>
+      <include>
+        <uri>model://rmuc_2026</uri>
+      </include>
+      <!-- Align field center to (14.5, 8) and floor underside to z=0, as in rmuc25.
+           Apply the same translation to the field and both upstream speed bumps. -->
+      <pose>28.500000000 16.375655746 -0.158656120 0 0 0</pose>
+      <static>true</static>
+    </model>
+    <model name='speed_bump1'>
+      <include>
+        <uri>model://speed_bump</uri>
+      </include>
+      <pose>4.214000000 2.581155746 0.376743880 1.57 0 0</pose>
+      <static>true</static>
+    </model>
+
+    <model name='speed_bump2'>
+      <include>
+        <uri>model://speed_bump</uri>
+      </include>
+      <pose>19.429400000 15.491555746 0.376743880 1.57 0 0</pose>
+      <static>true</static>
+    </model>
+    <!-- Match the rmuc25 mesh walls: bottom z=0.059461, top z=18.754619.
+         Inner faces stay outside the aligned rmuc26 mesh bounds:
+         x=[-0.075, 29.075], y=[-0.025, 16.025]. -->
+    <model name='rmuc_2026_perimeter_walls'>
+      <static>true</static>
+      <link name='west_wall'>
+        <pose>-0.1025 8 9.40704 0 0 0</pose>
+        <collision name='collision'>
+          <geometry>
+            <box><size>0.055 16.16 18.695158</size></box>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box><size>0.055 16.16 18.695158</size></box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+        </visual>
+      </link>
+      <link name='east_wall'>
+        <pose>29.1025 8 9.40704 0 0 0</pose>
+        <collision name='collision'>
+          <geometry>
+            <box><size>0.055 16.16 18.695158</size></box>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box><size>0.055 16.16 18.695158</size></box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+        </visual>
+      </link>
+      <link name='south_wall'>
+        <pose>14.5 -0.0525 9.40704 0 0 0</pose>
+        <collision name='collision'>
+          <geometry>
+            <box><size>29.26 0.055 18.695158</size></box>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box><size>29.26 0.055 18.695158</size></box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+        </visual>
+      </link>
+      <link name='north_wall'>
+        <pose>14.5 16.0525 9.40704 0 0 0</pose>
+        <collision name='collision'>
+          <geometry>
+            <box><size>29.26 0.055 18.695158</size></box>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box><size>29.26 0.055 18.695158</size></box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

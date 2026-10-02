@@ -36,8 +36,12 @@ target_link_libraries(LightBarController
 )
 
 
+# Four independently steered and driven wheels
+add_library(SwerveDrive SHARED plugins/swerve_drive/SwerveDrive.cc)
+target_link_libraries(SwerveDrive gz-sim8::gz-sim8)
+
 # Install plugins
-install(TARGETS MecanumDrive2 ProjectileShooter LightBarController
+install(TARGETS MecanumDrive2 SwerveDrive ProjectileShooter LightBarController
     DESTINATION plugins
 )
 

@@ -42,7 +42,7 @@
         </plugin>
 
         <!--plugin for chassis control-->
-        <plugin filename="MecanumDrive2" name="gz::sim::systems::MecanumDrive2">
+        <plugin filename="SwerveDrive" name="gz::sim::systems::SwerveDrive">
             <!-- 云台转 -->
             <chassis_link>chassis</chassis_link>
             <!-- 小陀螺 -->
@@ -51,6 +51,12 @@
             <front_right_joint>front_right_wheel_joint</front_right_joint>
             <rear_left_joint>rear_left_wheel_joint</rear_left_joint>
             <rear_right_joint>rear_right_wheel_joint</rear_right_joint>
+            <wheel_radius>0.0758</wheel_radius>
+            <wheelbase>0.2465120200145953</wheelbase>
+            <track_width>0.2465120200145953</track_width>
+            <topic>/cmd_vel</topic>
+            <odom_topic>/odometry</odom_topic>
+            <command_timeout>0.5</command_timeout>
         </plugin>
 
         <!-- plugin for odom publisher
