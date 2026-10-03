@@ -39,6 +39,19 @@ public:
     this->wheelbase = sdf->Get<double>("wheelbase", this->wheelbase).first;
     this->track = sdf->Get<double>("track_width", this->track).first;
     this->timeout = sdf->Get<double>("command_timeout", 0.5).first;
+    this->wheelAcceleration = sdf->Get<double>("wheel_acceleration", 15.0).first;
+    this->steeringGain = sdf->Get<double>("steering_gain", 6.0).first;
+    this->steeringVelocity = sdf->Get<double>("steering_velocity", 3.0).first;
+    this->steeringAcceleration = sdf->Get<double>("steering_acceleration", 10.0).first;
+    for (double value : {this->wheelAcceleration, this->steeringGain,
+        this->steeringVelocity, this->steeringAcceleration})
+    {
+      if (!std::isfinite(value) || value <= 0)
+      {
+        gzerr << "SwerveDrive: actuator gains and limits must be positive and finite\n";
+        return;
+      }
+    }
     if (!this->chassis.Valid(ecm) || !std::isfinite(this->radius) ||
         !std::isfinite(this->wheelbase) || !std::isfinite(this->track) ||
         !std::isfinite(this->timeout) || this->radius <= 0 ||
@@ -77,6 +90,22 @@ public:
   {
     if (!this->ready || info.paused)
       return;
+    const double dt = std::chrono::duration<double>(info.dt).count();
+    if (dt <= 0)
+    {
+      std::lock_guard<std::mutex> lock(this->mutex);
+      this->target.Clear();
+      this->pending = false;
+      this->wheelSpeeds.fill(0);
+      this->steeringSpeeds.fill(0);
+      this->headings.fill(0);
+      for (size_t i = 0; i < this->wheels.size(); ++i)
+      {
+        SetVelocity(ecm, this->wheels[i], 0);
+        SetVelocity(ecm, this->steering[i], 0);
+      }
+      return;
+    }
     msgs::Twist command;
     {
       std::lock_guard<std::mutex> lock(this->mutex);
@@ -86,8 +115,6 @@ public:
         this->lastCommand = info.simTime;
         this->pending = false;
       }
-      if (info.dt < std::chrono::steady_clock::duration::zero())
-        this->target.Clear();
       if (info.simTime >= this->lastCommand &&
           std::chrono::duration<double>(info.simTime - this->lastCommand).count()
           <= this->timeout)
@@ -106,7 +133,7 @@ public:
       const double vy = command.linear().y() + x * command.angular().z();
       double speed = std::hypot(vx, vy) / this->radius;
       double error = 0;
-      if (speed > 1e-6)
+      if (speed * this->radius > 0.005)
       {
         error = std::remainder(std::atan2(vy, vx) - angle, 2 * pi);
         // Equivalent heading plus reverse drive avoids steering through 180 degrees.
@@ -119,11 +146,19 @@ public:
       }
       else
       {
+        speed = 0;
         error = std::remainder(this->headings[i] - angle, 2 * pi);
       }
-      SetVelocity(ecm, this->steering[i], std::max(-8.0, std::min(8.0, 12 * error)));
-      // Project onto the actual rolling direction while steering converges.
-      SetVelocity(ecm, this->wheels[i], speed * std::cos(error));
+      const double steeringTarget = std::abs(error) < 0.002 ? 0 :
+          std::max(-this->steeringVelocity,
+          std::min(this->steeringVelocity, this->steeringGain * error));
+      this->steeringSpeeds[i] = Slew(this->steeringSpeeds[i], steeringTarget,
+          this->steeringAcceleration * dt);
+      SetVelocity(ecm, this->steering[i], this->steeringSpeeds[i]);
+      // Limit actuator acceleration as well as projecting onto the rolling direction.
+      this->wheelSpeeds[i] = Slew(this->wheelSpeeds[i], speed * std::cos(error),
+          this->wheelAcceleration * dt);
+      SetVelocity(ecm, this->wheels[i], this->wheelSpeeds[i]);
     }
   }
 
@@ -152,6 +187,11 @@ public:
   }
 
 private:
+  static double Slew(double current, double target, double maxDelta)
+  {
+    return current + std::max(-maxDelta, std::min(maxDelta, target - current));
+  }
+
   static void SetVelocity(EntityComponentManager &ecm, Entity joint, double value)
   {
     auto *cmd = ecm.Component<components::JointVelocityCmd>(joint);
@@ -177,7 +217,11 @@ private:
   std::array<Entity, 4> wheels{};
   std::array<Entity, 4> steering{};
   std::array<double, 4> headings{};
-  double radius{0.0758}, wheelbase{0.2465120200145953}, track{0.2465120200145953}, timeout{0.5};
+  std::array<double, 4> wheelSpeeds{};
+  std::array<double, 4> steeringSpeeds{};
+  double radius{0.0758}, wheelbase{0.5}, track{0.5}, timeout{0.5};
+  double wheelAcceleration{15.0}, steeringGain{6.0};
+  double steeringVelocity{3.0}, steeringAcceleration{10.0};
   bool ready{false}, pending{false};
   std::string childFrame;
   std::mutex mutex;

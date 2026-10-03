@@ -23,20 +23,28 @@ Odometry uses the measured chassis world pose and child-frame twist, with the
 existing `/odom` and `/chassis` frame names. JointStatePublisher continues to
 publish all steering and wheel joint states through the existing bridge.
 
-The model uses equal wheelbase and track of approximately 0.246512 m, a
-0.0758 m tire radius and 0.024 m tire width. The four steering centers form a
-square. Their spacing is `0.4 - 2 * hypot(radius, tire_width / 2)`, keeping the
-complete tire steering sweep inside a 0.400 m square. The 0.340 m chassis plate
-sits above the tires; the original wide, low wheel holders are removed.
+The model uses a 0.500 m wheelbase and track, a 0.0758 m tire radius and 0.024 m
+tire width. Steering centers are at `(+-0.25, +-0.25)` m. The complete tire sweep
+is approximately 0.653488 m wide, not 0.500 m. The 0.500 m chassis plate sits
+above the tires; its 15 kg mass and box inertia are centered at its physical
+height of 0.120 m above the wheel axes, replacing the old below-ground COM.
 Wheel contact height and all upper-body and sensor definitions are retained.
 Unmodified referee attachments and upper-body parts are excluded from this
 chassis envelope and can protrude beyond it.
-The smoke test checks that model and plugin wheelbase, track and radius agree.
+The stability test checks the square wheel layout and chassis COM placement.
 Steering joint names default to `<front_left|front_right|rear_left|rear_right>_steering_joint`;
 the corresponding SDF parameter can override each name.
 
-`command_timeout` stops the wheels after 0.5 simulation seconds without a Gazebo
-command. The existing upstream controller republishes its cached ROS command;
+Actuator limits use simulation time: `wheel_acceleration` is 15 rad/s^2
+(approximately 1.137 m/s^2 at the tire), `steering_velocity` is 3 rad/s,
+`steering_acceleration` is 10 rad/s^2 and `steering_gain` is 6 s^-1.
+A 0.002 rad steering deadband and 0.005 m/s rolling-speed deadband suppress
+small corrections near rest. These limits smooth starts, reversals and stops;
+they do not lock the chassis attitude or bypass wheel contact physics.
+
+`command_timeout` requests zero wheel speed after 0.5 simulation seconds without
+a Gazebo command. Wheels then decelerate at the configured rate, so stopping is
+not instantaneous. The existing upstream controller republishes its cached ROS command;
 stopping only a ROS publisher does not trigger this timeout. Publish a zero twist
 to stop through the original ROS interface. Physical contact and steering
 transitions can cause measured velocity to differ from the request.
@@ -47,14 +55,17 @@ Build and run the isolated headless integration check from the workspace root:
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select rmoss_gz_plugins rmoss_gz_resources pb2025_robot_description --symlink-install
 source install/setup.bash
-python3 src/rmoss_gazebo/rmoss_gz_plugins/test/swerve_smoke.py
+python3 src/rmoss_gazebo/rmoss_gz_plugins/test/swerve_stability.py --check-stability
+# Optional 20 mm high, 120 mm long transverse obstacle:
+python3 src/rmoss_gazebo/rmoss_gz_plugins/test/swerve_stability.py --check-stability --bump
 ```
 
 The check requires the workspace's existing `rmoss_gz_base`, `ros_gz_bridge`,
 `sdformat_tools`, and `rmu_gazebo_simulator` dependencies. It expands the complete
-robot, converts it to URDF, and tests both original ROS command interfaces,
-forward/lateral/reverse/yaw/combined motion, zero-command stopping, and Gazebo
-command timeout. It uses an isolated Gazebo partition and ROS domain, preserves
+robot and tests the original ROS cmd_vel_chassis path through forward/lateral/
+reverse/yaw/combined motion, zero-command stopping, and Gazebo command timeout.
+It measures peak roll/pitch during transitions and settled velocity error.
+It uses an isolated Gazebo partition and ROS domain, preserves
 logs under the printed temporary directory, and shuts down its child processes.
 The test world uses a flat floor and the original model plugins; camera and lidar
 rendering and match referee behavior are not exercised by this chassis test.

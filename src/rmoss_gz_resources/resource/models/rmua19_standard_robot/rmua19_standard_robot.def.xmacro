@@ -42,12 +42,12 @@
         <link name="chassis" >
             <pose relative_to="gimbal_yaw_joint">0 0 0 0 0 0</pose>
             <inertial>
-                <pose>0 0 -0.6 0 0 0</pose>
-                <xmacro_block name="inertia_box" m="15.0" x="0.34" y="0.34" z="0.025" />
+                <pose>0 0 0.12 0 0 0</pose>
+                <xmacro_block name="inertia_box" m="15.0" x="0.50" y="0.50" z="0.025" />
             </inertial>
             <visual name="base_link_visual">
                 <pose>0 0 0.12 0 0 0</pose>
-                <xmacro_block name="geometry_box" x="0.34" y="0.34" z="0.025"/>
+                <xmacro_block name="geometry_box" x="0.50" y="0.50" z="0.025"/>
                 <material><ambient>0.3 0.35 0.4 1</ambient><diffuse>0.3 0.35 0.4 1</diffuse></material>
             </visual>
             <visual name="projectile_container_visual">
@@ -57,7 +57,7 @@
             </visual>
             <collision name="base_link_base_collision">
                 <pose>0 0 0.12 0 0 0</pose>
-                <xmacro_block name="geometry_box" x="0.34" y="0.34" z="0.025"/>
+                <xmacro_block name="geometry_box" x="0.50" y="0.50" z="0.025"/>
             </collision>
             <collision name="base_link_projectile_container_collision">
                 <pose>-0.122 0 0.177 0 0 0</pose>
@@ -68,15 +68,15 @@
                 <update_rate>200</update_rate>
             </sensor>
         </link>
-        <!-- Half spacing = 0.2 - hypot(0.0758, 0.024/2), including the tire steering sweep. -->
+        <!-- Steering centers form a 0.50 m square; tire sweep is outside this square. -->
         <!--front_left wheel link and joint-->
-        <xmacro_block name="swerve_wheel" prefix="front_left" parent="chassis" pose="0.12325601000729765 0.12325601000729765 0 0 0 0" side="1"/>
+        <xmacro_block name="swerve_wheel" prefix="front_left" parent="chassis" pose="0.25 0.25 0 0 0 0" side="1"/>
         <!--front_right wheel link and joint-->
-        <xmacro_block name="swerve_wheel" prefix="front_right" parent="chassis" pose="0.12325601000729765 -0.12325601000729765 0 0 0 0" side="-1"/>
+        <xmacro_block name="swerve_wheel" prefix="front_right" parent="chassis" pose="0.25 -0.25 0 0 0 0" side="-1"/>
         <!--rear_left wheel link and joint-->
-        <xmacro_block name="swerve_wheel" prefix="rear_left" parent="chassis" pose="-0.12325601000729765 0.12325601000729765 0 0 0 0" side="1"/>
+        <xmacro_block name="swerve_wheel" prefix="rear_left" parent="chassis" pose="-0.25 0.25 0 0 0 0" side="1"/>
         <!--rear_right wheel link and joint-->
-        <xmacro_block name="swerve_wheel" prefix="rear_right" parent="chassis" pose="-0.12325601000729765 -0.12325601000729765 0 0 0 0" side="-1"/>
+        <xmacro_block name="swerve_wheel" prefix="rear_right" parent="chassis" pose="-0.25 -0.25 0 0 0 0" side="-1"/>
         <!--gimbal yaw module-->
         <joint name="gimbal_yaw_joint" type="revolute">
             <pose relative_to="base_link">0 0 -0.6 0 0 0</pose>
