@@ -14,6 +14,15 @@ nav_executor:
     xy_goal_tolerance: 0.3
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
+    route_monitor:
+      enabled: true
+      deviation_distance: 0.5
+      deviation_duration: 1.0
+      stall_duration: 3.0
+      minimum_command_speed: 0.1
+      minimum_progress: 0.1
+      maximum_sample_gap: 0.25
+      replan_cooldown: 2.0
     FollowPath:
       open_loop: false
 

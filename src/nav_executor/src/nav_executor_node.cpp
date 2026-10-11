@@ -7,10 +7,12 @@
 
 #include "nav_executor/path_planner.hpp"
 #include "nav_executor/path_executor.hpp"
+#include "nav_executor/route_monitor.hpp"
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "nav2_util/node_thread.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/u_int64.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "topology_global_planner/topology_global_planner.hpp"
@@ -115,7 +117,8 @@ class NavExecutor : public rclcpp::Node
 public:
   explicit NavExecutor(std::shared_ptr<ManagedCostmap> costmap)
   : Node("nav_executor"), costmap_(std::move(costmap)),
-    tasks_(declare_parameter("goal_tolerance", 0.02), declare_parameter("retry_delay", 1.0))
+    tasks_(declare_parameter("goal_tolerance", 0.02), declare_parameter("retry_delay", 1.0),
+      declare_parameter("route_monitor.replan_cooldown", 2.0))
   {
     planning_timeout_ = declare_parameter("planning_timeout", 5.0);
     const double tick_frequency = declare_parameter("tick_frequency", 20.0);
@@ -129,6 +132,20 @@ public:
     path_pub_ = create_publisher<nav_msgs::msg::Path>("plan", qos);
     state_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/state", qos);
     error_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/error", qos);
+    reason_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/replan_reason", qos);
+    count_pub_ = create_publisher<std_msgs::msg::UInt64>("nav_executor/replan_count", qos);
+    goal_id_pub_ = create_publisher<std_msgs::msg::UInt64>("nav_executor/goal_id", qos);
+    generation_pub_ = create_publisher<std_msgs::msg::UInt64>("nav_executor/plan_generation", qos);
+    RouteMonitorConfig monitor_config;
+    monitor_config.enabled = declare_parameter("route_monitor.enabled", true);
+    monitor_config.deviation_distance = declare_parameter("route_monitor.deviation_distance", 0.5);
+    monitor_config.deviation_duration = declare_parameter("route_monitor.deviation_duration", 1.0);
+    monitor_config.stall_duration = declare_parameter("route_monitor.stall_duration", 3.0);
+    monitor_config.minimum_command_speed =
+      declare_parameter("route_monitor.minimum_command_speed", 0.1);
+    monitor_config.minimum_progress = declare_parameter("route_monitor.minimum_progress", 0.1);
+    monitor_config.maximum_sample_gap = declare_parameter("route_monitor.maximum_sample_gap", 0.25);
+    monitor_ = std::make_unique<RouteMonitor>(monitor_config);
 
     // Separate node so the planner's existing mutable connector callbacks can be
     // serviced exclusively on the planning thread, between planning calls.
@@ -222,7 +239,7 @@ public:
             worker_->invalidate(tasks_.generation());
             publishTask();
           } else if (executor_ && tasks_.state() == TaskState::PATH_READY) {
-            executor_->acceptPath(tasks_.path(), tasks_.generation());
+            executor_->acceptPath(tasks_.path(), tasks_.identity());
           }
         } catch (const std::exception & exception) {
           tasks_.cancel();
@@ -263,7 +280,7 @@ public:
             RCLCPP_WARN(get_logger(), "Planning failed: %s", tasks_.error().c_str());
           }
           if (executor_ && tasks_.state() == TaskState::PATH_READY) {
-            executor_->acceptPath(tasks_.path(), tasks_.generation());
+            executor_->acceptPath(tasks_.path(), tasks_.identity());
           }
           publishTask();
         }
@@ -284,14 +301,34 @@ public:
         std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap_->getCostmap()->getMutex());
         return costmap_->isCurrent();
       },
-      [this](uint64_t generation, const std::string & error) {
-        if (tasks_.executionFailed(generation, error, TaskManager::Clock::now())) {
+      [this](PlanIdentity identity, const std::string & error) {
+        if (tasks_.executionFailed(identity, error, TaskManager::Clock::now())) {
           worker_->invalidate(tasks_.generation());
           publishTask();
         }
       },
-      [this](uint64_t generation) {
-        if (tasks_.executionSucceeded(generation)) {publishTask();}
+      [this](PlanIdentity identity) {
+        if (tasks_.executionSucceeded(identity)) {publishTask();}
+      },
+      [this](PlanIdentity identity) {return tasks_.isPathConfirmed(identity);},
+      [this](PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose,
+        const geometry_msgs::msg::Twist & command) {
+        if (!tasks_.isPathConfirmed(identity)) {return;}
+        const auto now = TaskManager::Clock::now();
+        const auto event = monitor_->observe(tasks_.path(), identity, pose, command, now);
+        if (event && tasks_.routeInvalid(*event, now)) {
+          executor_->stop(TaskManager::reasonName(event->reason));
+          worker_->invalidate(tasks_.generation());
+          RCLCPP_WARN(get_logger(),
+            "Route replan: reason=%s goal_id=%lu old_generation=%lu new_generation=%lu "
+            "count=%lu distance=%.3f progress=%.3f duration=%.2f; stopped until confirmed plan",
+            TaskManager::reasonName(event->reason), static_cast<unsigned long>(identity.goal_id),
+            static_cast<unsigned long>(identity.plan_generation),
+            static_cast<unsigned long>(tasks_.generation()),
+            static_cast<unsigned long>(tasks_.replanCount()),
+            event->path_distance, event->progress, event->duration);
+          publishTask();
+        }
       });
   }
 
@@ -307,6 +344,7 @@ public:
 private:
   void publishTask()
   {
+    if (monitor_ && tasks_.state() != TaskState::PATH_READY) {monitor_->reset();}
     if (executor_ && executor_->state() == ExecutionState::RUNNING &&
       tasks_.state() != TaskState::PATH_READY &&
       tasks_.state() != TaskState::SUCCEEDED)
@@ -323,6 +361,21 @@ private:
     std_msgs::msg::String error;
     error.data = tasks_.error();
     error_pub_->publish(error);
+    state.data = TaskManager::reasonName(tasks_.lastReplanReason());
+    reason_pub_->publish(state);
+    std_msgs::msg::UInt64 number;
+    number.data = tasks_.replanCount();
+    count_pub_->publish(number);
+    number.data = tasks_.identity().goal_id;
+    goal_id_pub_->publish(number);
+    number.data = tasks_.generation();
+    generation_pub_->publish(number);
+    RCLCPP_INFO(get_logger(),
+      "Task state=%s goal_id=%lu plan_generation=%lu route_replan_count=%lu reason=%s error=%s",
+      TaskManager::stateName(tasks_.state()), static_cast<unsigned long>(tasks_.identity().goal_id),
+      static_cast<unsigned long>(tasks_.generation()),
+      static_cast<unsigned long>(tasks_.replanCount()),
+      TaskManager::reasonName(tasks_.lastReplanReason()), tasks_.error().c_str());
   }
 
   std::shared_ptr<ManagedCostmap> costmap_;
@@ -337,9 +390,12 @@ private:
   std::unique_ptr<topology_global_planner::TopologyGlobalPlanner> planner_;
   std::unique_ptr<PathPlanner> worker_;
   std::unique_ptr<PathExecutor> executor_;
+  std::unique_ptr<RouteMonitor> monitor_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr error_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr reason_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr count_pub_, goal_id_pub_, generation_pub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr cancel_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr replan_srv_;

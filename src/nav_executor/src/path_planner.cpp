@@ -27,7 +27,7 @@ void PathPlanner::invalidate(uint64_t generation)
 void PathPlanner::submit(PlanningRequest request)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  generation_ = request.generation;
+  generation_ = request.identity.plan_generation;
   pending_ = std::move(request);
   result_.reset();
   wake_.notify_all();
@@ -57,8 +57,8 @@ void PathPlanner::run()
       pending_.reset();
     }
     if (!request) {continue;}
-    PlanningResult result{request->generation, nav_msgs::msg::Path{}, {}};
-    const auto cancel = [this, generation = request->generation]() {
+    PlanningResult result{request->identity, nav_msgs::msg::Path{}, {}};
+    const auto cancel = [this, generation = request->identity.plan_generation]() {
         return stopping_ || generation_ != generation;
       };
     try {

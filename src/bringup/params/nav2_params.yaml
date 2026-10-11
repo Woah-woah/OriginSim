@@ -1,101 +1,3 @@
-# amcl:
-#   ros__parameters:
-#     use_sim_time: True
-#     alpha1: 0.2
-#     alpha2: 0.2
-#     alpha3: 0.2
-#     alpha4: 0.2
-#     alpha5: 0.2
-#     base_frame_id: "aft_mapped"
-#     beam_skip_distance: 0.5
-#     beam_skip_error_threshold: 0.9
-#     beam_skip_threshold: 0.3
-#     do_beamskip: false
-#     global_frame_id: "map"
-#     lambda_short: 0.1
-#     laser_likelihood_max_dist: 2.0
-#     laser_max_range: 100.0
-#     laser_min_range: -1.0
-#     laser_model_type: "likelihood_field"
-#     max_beams: 60
-#     max_particles: 3000
-#     min_particles: 1000
-#     odom_frame_id: "odom"
-#     pf_err: 0.05
-#     pf_z: 0.99
-#     recovery_alpha_fast: 0.0
-#     recovery_alpha_slow: 0.0
-#     resample_interval: 1
-#     robot_model_type: "nav2_amcl::OmniMotionModel"
-#     save_pose_rate: 0.5
-#     sigma_hit: 0.2
-#     tf_broadcast: true
-#     transform_tolerance: 1.0
-#     update_min_a: 0.2
-#     update_min_d: 0.25
-#     z_hit: 0.5
-#     z_max: 0.05
-#     z_rand: 0.5
-#     z_short: 0.05
-#     scan_topic: /scan
-#     map_topic: /map
-#     set_initial_pose: True
-#     # # 核心修正：添加初始偏航角偏移（单位：弧度）
-#     # # 根据之前测量的map与odom的yaw偏差值设置（例如偏差62.45度，对应-1.09弧度）
-#     # initial_pose_yaw: -1.09
-#     # # 可选：放宽初始角度的协方差，让AMCL更快收敛到正确方向
-#     initial_pose_covariance:
-#       x: 0.1
-#       y: 0.1
-#       yaw: 0.1
-
-bt_navigator:
-  ros__parameters:
-    use_sim_time: True
-    global_frame: map
-    robot_base_frame: base_link_fake
-    odom_topic: /odom
-    bt_loop_duration: 10
-    default_server_timeout: 20
-    default_nav_to_pose_bt_xml: ""
-    default_nav_through_poses_bt_xml: ""
-    # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
-    # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
-    # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
-    # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
-    plugin_lib_names:
-      - nav2_escape_action_bt_node
-
-bt_navigator_navigate_through_poses_rclcpp_node:
-  ros__parameters:
-    use_sim_time: True
-
-bt_navigator_navigate_to_pose_rclcpp_node:
-  ros__parameters:
-    use_sim_time: True
-
-recoveries_server:
-  ros__parameters:
-    costmap_topic: local_costmap/costmap_raw
-    footprint_topic: local_costmap/published_footprint
-    cycle_frequency: 10.0
-    recovery_plugins: ["escape","backup"]
-    # spin:
-    #   plugin: "nav2_recoveries/Spin"
-    backup:
-      plugin: "nav2_recoveries/BackUp"
-    escape:
-      plugin: "nav2_recoveries/Escape"
-    # wait:
-    #   plugin: "nav2_recoveries/Wait"
-    global_frame: odom
-    robot_base_frame: base_link_fake
-    transform_timeout: 0.1
-    simulate_ahead_time: 5.0
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.4
-    rotational_acc_lim: 3.2
-
 
 local_costmap:
   local_costmap:
@@ -239,8 +141,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 10.0
         inflation_radius: 0.55
-        always_send_full_costmap: True
-
+      always_send_full_costmap: True
 
 
 map_server:
@@ -274,7 +175,15 @@ nav_executor:
     xy_goal_tolerance: 0.3
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
-
+    route_monitor:
+      enabled: true
+      deviation_distance: 0.5
+      deviation_duration: 1.0
+      stall_duration: 3.0
+      minimum_command_speed: 0.1
+      minimum_progress: 0.1
+      maximum_sample_gap: 0.25
+      replan_cooldown: 2.0
     FollowPath:
       open_loop: false
       time_steps: 40       # prediction_time = time_steps × model_dt
@@ -359,82 +268,7 @@ topology_planner:
         allow_unknown: true
         use_final_approach_orientation: true
 
-smoother_server:
-  ros__parameters:
-    use_sim_time: True
-    smoother_plugins: ["simple_smoother"]
-    simple_smoother:
-      plugin: "nav2_smoother::SimpleSmoother"
-      tolerance: 1.0e-10
-      max_its: 1000
-      do_refinement: True
-
-
-behavior_server:
-  ros__parameters:
-    costmap_topic: local_costmap/costmap_raw
-    footprint_topic: local_costmap/published_footprint
-    cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait" , "escape"]
-    spin:
-      plugin: "nav2_behaviors::Spin"
-    backup:
-      plugin: "nav2_behaviors::BackUp"
-    escape:
-      plugin: "nav2_behaviors/Escape"
-    drive_on_heading:
-      plugin: "nav2_behaviors::DriveOnHeading"
-    wait:
-      plugin: "nav2_behaviors::Wait"
-    assisted_teleop:
-      plugin: "nav2_behaviors::AssistedTeleop"
-    global_frame: odom
-    robot_base_frame: base_link_fake
-    #robot_base_frame: base_link
-    transform_tolerance: 0.2
-    use_sim_time: True
-    simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.4
-    rotational_acc_lim: 3.2
-    collision_check: false
-
-
 robot_state_publisher:
   ros__parameters:
     use_sim_time: True
 
-waypoint_follower:
-  ros__parameters:
-    use_sim_time: True
-    loop_rate: 5
-    stop_on_failure: false
-    waypoint_task_executor_plugin: "wait_at_waypoint"
-    wait_at_waypoint:
-      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
-      enabled: True
-      waypoint_pause_duration: 200
-
-velocity_smoother:
-  ros__parameters:
-    use_sim_time: True
-    smoothing_frequency: 20.0 #5.0
-    scale_velocities: False
-    feedback: "CLOSED_LOOP"
-    max_velocity: [15.0, 15.0, 2.5]
-    min_velocity: [-15.0, -15.0, -2.5]
-    max_accel: [100.0, 100.0, 100.0]
-    max_decel: [-100.0, -100.0, -100.0]
-    odom_topic: "/odom"
-    odom_duration: 0.1
-    deadband_velocity: [0.0, 0.0, 0.0]
-    velocity_timeout: 1.0
-    # feedback: "OPEN_LOOP"
-    # max_velocity: [2.0, 0.0, 1.0]
-    # min_velocity: [-2.0, 0.0, -1.0]
-    # max_accel: [2.0, 0.0, 1.0]  
-    # max_decel: [-2.0, 0.0, -1.0]
-    # odom_topic: "Odometry"
-    # odom_duration: 0.1
-    # deadband_velocity: [0.0, 0.0, 0.0]
-    # velocity_timeout: 1.0

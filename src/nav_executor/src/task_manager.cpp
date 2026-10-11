@@ -1,21 +1,25 @@
 #include "nav_executor/task_manager.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
 
 namespace nav_executor
 {
-TaskManager::TaskManager(double goal_tolerance, double retry_delay)
+TaskManager::TaskManager(double goal_tolerance, double retry_delay, double replan_cooldown)
 : goal_tolerance_(goal_tolerance)
 {
   if (!std::isfinite(goal_tolerance) || goal_tolerance < 0.0 ||
-    !std::isfinite(retry_delay) || retry_delay <= 0.0)
+    !std::isfinite(retry_delay) || retry_delay <= 0.0 ||
+    !std::isfinite(replan_cooldown) || replan_cooldown < 0.0)
   {
-    throw std::invalid_argument("goal_tolerance >= 0 and retry_delay > 0 required");
+    throw std::invalid_argument("goal_tolerance >= 0, retry_delay > 0, replan_cooldown >= 0 required");
   }
   retry_delay_ = std::chrono::duration_cast<Clock::duration>(
     std::chrono::duration<double>(retry_delay));
+  replan_cooldown_ = std::chrono::duration_cast<Clock::duration>(
+    std::chrono::duration<double>(replan_cooldown));
 }
 
 bool TaskManager::setGoal(const geometry_msgs::msg::PoseStamped & goal)
@@ -28,27 +32,36 @@ bool TaskManager::setGoal(const geometry_msgs::msg::PoseStamped & goal)
     return false;
   }
   goal_ = goal;
+  ++identity_.goal_id;
+  next_route_plan_at_ = Clock::time_point{};
+  replan_count_ = 0;
+  last_replan_reason_ = ReplanReason::NONE;
   return replan();
 }
 
 bool TaskManager::replan()
 {
   if (!goal_) {return false;}
-  ++generation_;
+  ++identity_.plan_generation;
   state_ = TaskState::WAITING_FOR_MAP;
   retry_at_ = Clock::time_point{};
   path_ = nav_msgs::msg::Path{};
   error_.clear();
+  route_replan_pending_ = false;
   return true;
 }
 
 void TaskManager::cancel()
 {
-  ++generation_;
+  ++identity_.plan_generation;
   goal_.reset();
   path_ = nav_msgs::msg::Path{};
   error_.clear();
   state_ = TaskState::IDLE;
+  retry_at_ = next_route_plan_at_ = Clock::time_point{};
+  replan_count_ = 0;
+  last_replan_reason_ = ReplanReason::NONE;
+  route_replan_pending_ = false;
 }
 
 std::optional<PlanningRequest> TaskManager::nextRequest(bool map_ready, Clock::time_point now)
@@ -64,14 +77,18 @@ std::optional<PlanningRequest> TaskManager::nextRequest(bool map_ready, Clock::t
     return std::nullopt;
   }
   // Every attempt gets a unique generation, including retries of the same target.
-  ++generation_;
+  if (route_replan_pending_) {
+    next_route_plan_at_ = now + replan_cooldown_;
+    route_replan_pending_ = false;
+  }
+  ++identity_.plan_generation;
   state_ = TaskState::PLANNING;
-  return PlanningRequest{generation_, *goal_};
+  return PlanningRequest{identity_, *goal_};
 }
 
 bool TaskManager::accept(PlanningResult result, Clock::time_point now)
 {
-  if (!goal_ || result.generation != generation_ || state_ != TaskState::PLANNING) {
+  if (!goal_ || result.identity != identity_ || state_ != TaskState::PLANNING) {
     return false;
   }
   if (!result.error.empty() || result.path.poses.empty()) {
@@ -100,11 +117,11 @@ const char * TaskManager::stateName(TaskState state)
   return "UNKNOWN";
 }
 
-bool TaskManager::executionFailed(uint64_t generation, const std::string & error,
+bool TaskManager::executionFailed(PlanIdentity identity, const std::string & error,
   Clock::time_point now)
 {
-  if (state_ != TaskState::PATH_READY || generation != generation_) {return false;}
-  ++generation_;
+  if (!isPathConfirmed(identity)) {return false;}
+  ++identity_.plan_generation;
   path_ = nav_msgs::msg::Path{};
   error_ = error;
   retry_at_ = now + retry_delay_;
@@ -112,11 +129,44 @@ bool TaskManager::executionFailed(uint64_t generation, const std::string & error
   return true;
 }
 
-bool TaskManager::executionSucceeded(uint64_t generation)
+bool TaskManager::executionSucceeded(PlanIdentity identity)
 {
-  if (state_ != TaskState::PATH_READY || generation != generation_) {return false;}
+  if (!isPathConfirmed(identity)) {return false;}
   state_ = TaskState::SUCCEEDED;
   error_.clear();
   return true;
+}
+
+bool TaskManager::isPathConfirmed(PlanIdentity identity) const
+{
+  return goal_.has_value() && state_ == TaskState::PATH_READY &&
+         identity == identity_ && !path_.poses.empty();
+}
+
+bool TaskManager::routeInvalid(const ReplanEvent & event, Clock::time_point now)
+{
+  if (!isPathConfirmed(event.identity) ||
+    (event.reason != ReplanReason::PATH_DEVIATION &&
+    event.reason != ReplanReason::EXECUTION_STALLED))
+  {
+    return false;
+  }
+  // Revoke immediately, even during cooldown. Delay dispatch, never safety stopping.
+  replan();
+  retry_at_ = std::max(now, next_route_plan_at_);
+  route_replan_pending_ = true;
+  last_replan_reason_ = event.reason;
+  ++replan_count_;
+  return true;
+}
+
+const char * TaskManager::reasonName(ReplanReason reason)
+{
+  switch (reason) {
+    case ReplanReason::NONE: return "NONE";
+    case ReplanReason::PATH_DEVIATION: return "PATH_DEVIATION";
+    case ReplanReason::EXECUTION_STALLED: return "EXECUTION_STALLED";
+  }
+  return "UNKNOWN";
 }
 }  // namespace nav_executor

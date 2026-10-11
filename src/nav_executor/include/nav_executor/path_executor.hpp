@@ -23,16 +23,20 @@ bool finiteTwist(const geometry_msgs::msg::Twist & speed);
 class PathExecutor
 {
 public:
-  using Failure = std::function<void(uint64_t, const std::string &)>;
-  using Success = std::function<void(uint64_t)>;
+  using Failure = std::function<void(PlanIdentity, const std::string &)>;
+  using Success = std::function<void(PlanIdentity)>;
+  using Confirmation = std::function<bool(PlanIdentity)>;
+  using Observation = std::function<void(PlanIdentity,
+      const geometry_msgs::msg::PoseStamped &, const geometry_msgs::msg::Twist &)>;
   PathExecutor(
     const rclcpp::Node::SharedPtr & node,
     std::shared_ptr<nav2_costmap_2d::Costmap2DROS> local_costmap,
-    std::function<bool()> global_map_ready, Failure failure, Success success);
+    std::function<bool()> global_map_ready, Failure failure, Success success,
+    Confirmation confirmation, Observation observation);
   ~PathExecutor();
   PathExecutor(const PathExecutor &) = delete;
   PathExecutor & operator=(const PathExecutor &) = delete;
-  void acceptPath(const nav_msgs::msg::Path & path, uint64_t generation);
+  bool acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity);
   void stop(const std::string & reason);
   ExecutionState state() const;
 

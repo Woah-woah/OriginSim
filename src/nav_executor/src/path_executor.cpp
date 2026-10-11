@@ -92,9 +92,11 @@ class PathExecutor::Impl
 public:
   Impl(const rclcpp::Node::SharedPtr & node,
     std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap,
-    std::function<bool()> global_ready, Failure failure, Success success)
+    std::function<bool()> global_ready, Failure failure, Success success,
+    Confirmation confirmation, Observation observation)
   : node_(node), costmap_(std::move(costmap)), global_ready_(std::move(global_ready)),
     failure_(std::move(failure)), success_(std::move(success)),
+    confirmation_(std::move(confirmation)), observation_(std::move(observation)),
     logger_(node->get_logger()), clock_(node->get_clock())
   {
     frequency_ = node->declare_parameter("controller_frequency", 20.0);
@@ -223,14 +225,21 @@ public:
       controller_.reset();
       setState(ExecutionState::FAILED, reason);
       RCLCPP_WARN(logger_, "Path execution stopped: %s", reason.c_str());
-      failure_(generation_, reason);
+      failure_(identity_, reason);
     }
   }
 
-  void acceptPath(const nav_msgs::msg::Path & path, uint64_t generation)
+  bool acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity)
   {
+    // An obsolete handoff must neither replace the plan nor stop its newer executor.
+    if (!confirmation_(identity)) {
+      RCLCPP_WARN(logger_, "Ignoring unconfirmed path: goal_id=%lu plan_generation=%lu",
+        static_cast<unsigned long>(identity.goal_id),
+        static_cast<unsigned long>(identity.plan_generation));
+      return false;
+    }
     stop("Replacing execution path");
-    generation_ = generation;
+    identity_ = identity;
     try {
       if (path.poses.empty() || path.header.frame_id.empty()) {
         throw std::invalid_argument("Cannot execute an empty path or frame");
@@ -245,11 +254,13 @@ public:
       controller_.setPlan(path);
       path_ = path;
       setState(ExecutionState::RUNNING, "");
+      return true;
     } catch (const std::exception & exception) {
       // Acceptance failure must also invalidate the TaskManager product.
       publishZero();
       setState(ExecutionState::FAILED, exception.what());
-      failure_(generation_, exception.what());
+      failure_(identity_, exception.what());
+      return false;
     }
   }
 
@@ -282,6 +293,7 @@ public:
   void tick()
   {
     if (!path_) {publishZero(); return;}
+    if (!confirmation_(identity_)) {stop("TaskManager revoked execution path"); return;}
     try {
       if (!active_ || costmap_->get_current_state().label() != "active" ||
         !global_ready_() || !costmap_->isCurrent()) {
@@ -314,7 +326,7 @@ public:
           path_.reset();
           controller_.reset();
           setState(ExecutionState::SUCCEEDED, "");
-          success_(generation_);
+          success_(identity_);
         }
         return;
       }
@@ -343,6 +355,18 @@ public:
         !global_ready_() || !costmap_->isCurrent()) {
         throw std::runtime_error("Costmap invalidated during MPPI computation");
       }
+      // Report validated controller feedback in the confirmed global path frame.
+      // The monitor callback can synchronously revoke this path through TaskManager.
+      tf2::Transform local_from_path;
+      tf2::fromMsg(path_tf.transform, local_from_path);
+      auto path_from_local = path_tf;
+      path_from_local.header.frame_id = path_->header.frame_id;
+      path_from_local.child_frame_id = costmap_->getGlobalFrameID();
+      path_from_local.transform = tf2::toMsg(local_from_path.inverse());
+      geometry_msgs::msg::PoseStamped route_pose;
+      tf2::doTransform(pose, route_pose, path_from_local);
+      observation_(identity_, route_pose, command.twist);
+      if (!path_ || !confirmation_(identity_)) {publishZero(); return;}
       cmd_pub_->publish(command.twist);
     } catch (const std::exception & exception) {
       fail(exception.what());
@@ -354,6 +378,8 @@ public:
   std::function<bool()> global_ready_;
   Failure failure_;
   Success success_;
+  Confirmation confirmation_;
+  Observation observation_;
   rclcpp::Logger logger_;
   rclcpp::Clock::SharedPtr clock_;
   double frequency_, odom_timeout_, tf_timeout_, control_timeout_;
@@ -362,7 +388,7 @@ public:
   std::optional<nav_msgs::msg::Path> path_;
   std::optional<nav_msgs::msg::Odometry> odom_;
   TaskManager::Clock::time_point odom_received_{};
-  uint64_t generation_{0};
+  PlanIdentity identity_;
   ExecutionState state_{ExecutionState::IDLE};
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_, error_pub_;
@@ -374,12 +400,13 @@ public:
 
 PathExecutor::PathExecutor(const rclcpp::Node::SharedPtr & node,
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> local_costmap,
-  std::function<bool()> global_map_ready, Failure failure, Success success)
+  std::function<bool()> global_map_ready, Failure failure, Success success,
+  Confirmation confirmation, Observation observation)
 : impl_(std::make_unique<Impl>(node, std::move(local_costmap), std::move(global_map_ready),
-    std::move(failure), std::move(success))) {}
+    std::move(failure), std::move(success), std::move(confirmation), std::move(observation))) {}
 PathExecutor::~PathExecutor() = default;
-void PathExecutor::acceptPath(const nav_msgs::msg::Path & path, uint64_t generation)
-{impl_->acceptPath(path, generation);}
+bool PathExecutor::acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity)
+{return impl_->acceptPath(path, identity);}
 void PathExecutor::stop(const std::string & reason) {impl_->stop(reason);}
 ExecutionState PathExecutor::state() const {return impl_->state_;}
 }  // namespace nav_executor
