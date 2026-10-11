@@ -54,6 +54,7 @@ void TaskManager::cancel()
 std::optional<PlanningRequest> TaskManager::nextRequest(bool map_ready, Clock::time_point now)
 {
   if (!goal_ || state_ == TaskState::PLANNING || state_ == TaskState::PATH_READY ||
+    state_ == TaskState::SUCCEEDED ||
     now < retry_at_)
   {
     return std::nullopt;
@@ -93,8 +94,29 @@ const char * TaskManager::stateName(TaskState state)
     case TaskState::WAITING_FOR_MAP: return "WAITING_FOR_MAP";
     case TaskState::PLANNING: return "PLANNING";
     case TaskState::PATH_READY: return "PATH_READY";
+    case TaskState::SUCCEEDED: return "SUCCEEDED";
     case TaskState::FAILED: return "FAILED";
   }
   return "UNKNOWN";
+}
+
+bool TaskManager::executionFailed(uint64_t generation, const std::string & error,
+  Clock::time_point now)
+{
+  if (state_ != TaskState::PATH_READY || generation != generation_) {return false;}
+  ++generation_;
+  path_ = nav_msgs::msg::Path{};
+  error_ = error;
+  retry_at_ = now + retry_delay_;
+  state_ = TaskState::FAILED;
+  return true;
+}
+
+bool TaskManager::executionSucceeded(uint64_t generation)
+{
+  if (state_ != TaskState::PATH_READY || generation != generation_) {return false;}
+  state_ = TaskState::SUCCEEDED;
+  error_.clear();
+  return true;
 }
 }  // namespace nav_executor

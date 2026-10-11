@@ -5,18 +5,19 @@ find_package(ament_cmake REQUIRED)
 find_package(Threads REQUIRED)
 find_package(yaml-cpp REQUIRED)
 set(dependencies rclcpp nav2_costmap_2d nav2_util topology_global_planner
-  geometry_msgs nav_msgs std_msgs std_srvs tf2 tf2_geometry_msgs pluginlib)
+  geometry_msgs nav_msgs std_msgs std_srvs tf2 tf2_geometry_msgs pluginlib mppi_controller)
 foreach(dependency IN LISTS dependencies)
   find_package(${dependency} REQUIRED)
 endforeach()
 
-add_library(${PROJECT_NAME}_core src/task_manager.cpp src/path_planner.cpp)
+add_library(${PROJECT_NAME}_core src/task_manager.cpp src/path_planner.cpp src/path_executor.cpp)
 target_compile_features(${PROJECT_NAME}_core PUBLIC cxx_std_17)
 target_include_directories(${PROJECT_NAME}_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(${PROJECT_NAME}_core ${dependencies})
 target_link_libraries(${PROJECT_NAME}_core Threads::Threads)
+target_link_libraries(${PROJECT_NAME}_core mppi_controller::mppi_controller)
 
 add_executable(nav_executor_node src/nav_executor_node.cpp)
 target_link_libraries(nav_executor_node ${PROJECT_NAME}_core)

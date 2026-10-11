@@ -10,7 +10,7 @@
 
 namespace nav_executor
 {
-enum class TaskState {IDLE, WAITING_FOR_MAP, PLANNING, PATH_READY, FAILED};
+enum class TaskState {IDLE, WAITING_FOR_MAP, PLANNING, PATH_READY, SUCCEEDED, FAILED};
 
 struct PlanningRequest
 {
@@ -36,6 +36,8 @@ public:
   void cancel();
   std::optional<PlanningRequest> nextRequest(bool map_ready, Clock::time_point now);
   bool accept(PlanningResult result, Clock::time_point now);
+  bool executionFailed(uint64_t generation, const std::string & error, Clock::time_point now);
+  bool executionSucceeded(uint64_t generation);
   uint64_t generation() const {return generation_;}
   TaskState state() const {return state_;}
   const nav_msgs::msg::Path & path() const {return path_;}

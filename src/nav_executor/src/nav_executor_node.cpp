@@ -6,6 +6,7 @@
 #include <unordered_set>
 
 #include "nav_executor/path_planner.hpp"
+#include "nav_executor/path_executor.hpp"
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "nav2_util/node_thread.hpp"
 #include "pluginlib/class_loader.hpp"
@@ -73,7 +74,8 @@ void validateTopology(const std::string & filename)
 class ManagedCostmap : public nav2_costmap_2d::Costmap2DROS
 {
 public:
-  ManagedCostmap() : Costmap2DROS("global_costmap") {}
+  ManagedCostmap(const std::string & name, bool use_sim_time)
+  : Costmap2DROS(name, use_sim_time) {}
   void on_rcl_preshutdown() override {}
   nav2_util::CallbackReturn on_configure(const rclcpp_lifecycle::State & state) override
   {
@@ -89,7 +91,7 @@ public:
   void releaseResources()
   {
     const auto state = get_current_state();
-    if (activated_) {
+    if (activated_ && state.label() == "active") {
       deactivate();
       activated_ = false;
     }
@@ -197,6 +199,7 @@ public:
 
     goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
       "goal_pose", rclcpp::QoS(10), [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+        if (executor_) {executor_->stop("Goal update");}
         try {
           auto goal = *msg;
           if (goal.header.frame_id.empty()) {throw std::invalid_argument("Goal frame_id is empty");}
@@ -218,8 +221,13 @@ public:
           if (tasks_.setGoal(goal)) {
             worker_->invalidate(tasks_.generation());
             publishTask();
+          } else if (executor_ && tasks_.state() == TaskState::PATH_READY) {
+            executor_->acceptPath(tasks_.path(), tasks_.generation());
           }
         } catch (const std::exception & exception) {
+          tasks_.cancel();
+          worker_->invalidate(tasks_.generation());
+          publishTask();
           RCLCPP_WARN(get_logger(), "Rejected goal: %s", exception.what());
           std_msgs::msg::String error;
           error.data = exception.what();
@@ -230,6 +238,7 @@ public:
       [this](const std_srvs::srv::Trigger::Request::SharedPtr,
       std_srvs::srv::Trigger::Response::SharedPtr response) {
         tasks_.cancel();
+        if (executor_) {executor_->stop("Task cancelled");}
         worker_->invalidate(tasks_.generation());
         publishTask();
         response->success = true;
@@ -241,6 +250,7 @@ public:
         response->success = tasks_.replan();
         response->message = response->success ? "Replan requested" : "No active goal";
         if (response->success) {
+          if (executor_) {executor_->stop("Replan requested");}
           worker_->invalidate(tasks_.generation());
           publishTask();
         }
@@ -251,6 +261,9 @@ public:
         if (tasks_.accept(std::move(*result), now)) {
           if (tasks_.state() == TaskState::FAILED) {
             RCLCPP_WARN(get_logger(), "Planning failed: %s", tasks_.error().c_str());
+          }
+          if (executor_ && tasks_.state() == TaskState::PATH_READY) {
+            executor_->acceptPath(tasks_.path(), tasks_.generation());
           }
           publishTask();
         }
@@ -263,9 +276,29 @@ public:
     publishTask();
   }
 
+  void initializeExecutor(const std::shared_ptr<ManagedCostmap> & local_costmap)
+  {
+    executor_ = std::make_unique<PathExecutor>(shared_from_this(), local_costmap,
+      [this]() {
+        if (!ready_ || costmap_->get_current_state().label() != "active") {return false;}
+        std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap_->getCostmap()->getMutex());
+        return costmap_->isCurrent();
+      },
+      [this](uint64_t generation, const std::string & error) {
+        if (tasks_.executionFailed(generation, error, TaskManager::Clock::now())) {
+          worker_->invalidate(tasks_.generation());
+          publishTask();
+        }
+      },
+      [this](uint64_t generation) {
+        if (tasks_.executionSucceeded(generation)) {publishTask();}
+      });
+  }
+
   ~NavExecutor() override
   {
     tick_.reset();
+    executor_.reset();
     worker_.reset();
     planner_executor_.remove_node(planner_node_);
     planner_.reset();
@@ -274,6 +307,12 @@ public:
 private:
   void publishTask()
   {
+    if (executor_ && executor_->state() == ExecutionState::RUNNING &&
+      tasks_.state() != TaskState::PATH_READY &&
+      tasks_.state() != TaskState::SUCCEEDED)
+    {
+      executor_->stop(TaskManager::stateName(tasks_.state()));
+    }
     auto path = tasks_.path();
     path.header.frame_id = global_frame_;
     path.header.stamp = now();
@@ -297,6 +336,7 @@ private:
   rclcpp::executors::SingleThreadedExecutor planner_executor_;
   std::unique_ptr<topology_global_planner::TopologyGlobalPlanner> planner_;
   std::unique_ptr<PathPlanner> worker_;
+  std::unique_ptr<PathExecutor> executor_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr error_pub_;
@@ -316,26 +356,42 @@ int main(int argc, char ** argv)
   std::signal(SIGTERM, requestShutdown);
   int exit_code = 0;
   std::shared_ptr<nav_executor::ManagedCostmap> costmap;
+  std::shared_ptr<nav_executor::ManagedCostmap> local_costmap;
   std::unique_ptr<nav2_util::NodeThread> costmap_thread;
+  std::unique_ptr<nav2_util::NodeThread> local_costmap_thread;
   // ROS callback groups retain weak subscription control blocks until the base
   // node is destroyed. Keep their plugin code loaded beyond Costmap2DROS's
   // member ClassLoader destruction, including optimized builds.
   pluginlib::ClassLoader<nav2_costmap_2d::Layer> plugin_libraries(
     "nav2_costmap_2d", "nav2_costmap_2d::Layer");
   try {
-    costmap = std::make_shared<nav_executor::ManagedCostmap>();
+    // The named Costmap2DROS constructor adds a use_sim_time CLI override,
+    // which takes precedence over YAML. Resolve the executor's configured
+    // clock before creating either map and explicitly pass the same time mode.
+    const bool use_sim_time = []() {
+        const auto parameters = std::make_shared<rclcpp::Node>("nav_executor");
+        return parameters->get_parameter("use_sim_time").as_bool();
+      }();
+    costmap = std::make_shared<nav_executor::ManagedCostmap>("global_costmap", use_sim_time);
+    local_costmap = std::make_shared<nav_executor::ManagedCostmap>("local_costmap", use_sim_time);
     costmap_thread = std::make_unique<nav2_util::NodeThread>(costmap);
+    local_costmap_thread = std::make_unique<nav2_util::NodeThread>(local_costmap);
     if (costmap->configure().label() != "inactive") {
       throw std::runtime_error("Global costmap configuration failed");
     }
-    for (const auto & key : {"plugins", "filters"}) {
-      const auto names = costmap->get_parameter(key).as_string_array();
-      for (const auto & name : names) {
-        plugin_libraries.loadLibraryForClass(
-          costmap->get_parameter(name + ".plugin").as_string());
+    if (local_costmap->configure().label() != "inactive") {
+      throw std::runtime_error("Local costmap configuration failed");
+    }
+    for (const auto & map : {costmap, local_costmap}) {
+      for (const auto & key : {"plugins", "filters"}) {
+        const auto names = map->get_parameter(key).as_string_array();
+        for (const auto & name : names) {
+          plugin_libraries.loadLibraryForClass(map->get_parameter(name + ".plugin").as_string());
+        }
       }
     }
     auto node = std::make_shared<nav_executor::NavExecutor>(costmap);
+    node->initializeExecutor(local_costmap);
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(node);
     while (rclcpp::ok() && !shutdown_requested) {
@@ -348,14 +404,17 @@ int main(int argc, char ** argv)
     exit_code = 1;
   }
   // The worker has joined; finish lifecycle transitions before context shutdown.
-  if (costmap) {
+  for (const auto & map : {local_costmap, costmap}) {
+    if (!map) {continue;}
     try {
-      costmap->releaseResources();
+      map->releaseResources();
     } catch (const std::exception & exception) {
       RCLCPP_ERROR(rclcpp::get_logger("nav_executor"), "Costmap cleanup failed: %s", exception.what());
       exit_code = 1;
     }
   }
+  local_costmap_thread.reset();
+  local_costmap.reset();
   costmap_thread.reset();
   costmap.reset();
   rclcpp::shutdown();

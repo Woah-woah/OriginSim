@@ -5,6 +5,17 @@ nav_executor:
     goal_tolerance: 0.02
     retry_delay: 1.0
     planning_timeout: 5.0
+    controller_frequency: 20.0
+    odom_topic: /Odometry
+    cmd_vel_topic: /cmd_vel
+    odom_timeout: 0.5
+    tf_timeout: 0.5
+    control_timeout: 0.2
+    xy_goal_tolerance: 0.3
+    yaw_goal_tolerance: 3.14
+    stopped_velocity_tolerance: 0.05
+    FollowPath:
+      open_loop: false
 
 topology_planner:
   ros__parameters:
