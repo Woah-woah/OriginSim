@@ -32,6 +32,7 @@ Panels:
   - Class: rviz_common/Tool Properties
     Expanded:
       - /Publish Point1
+      - /2D Goal Pose1
     Name: Tool Properties
     Splitter Ratio: 0.5886790156364441
   - Class: rviz_common/Views
@@ -91,6 +92,8 @@ Visualization Manager:
           Value: true
         armor_support_frame_3:
           Value: true
+        base_footprint:
+          Value: true
         base_link:
           Value: true
         base_link_fake:
@@ -101,7 +104,15 @@ Visualization Manager:
           Value: true
         front_industrial_camera_optical_frame:
           Value: true
+        front_left_mount:
+          Value: true
+        front_left_steering:
+          Value: true
         front_left_wheel:
+          Value: true
+        front_right_mount:
+          Value: true
+        front_right_steering:
           Value: true
         front_right_wheel:
           Value: true
@@ -115,7 +126,15 @@ Visualization Manager:
           Value: true
         odom:
           Value: true
+        rear_left_mount:
+          Value: true
+        rear_left_steering:
+          Value: true
         rear_left_wheel:
+          Value: true
+        rear_right_mount:
+          Value: true
+        rear_right_steering:
           Value: true
         rear_right_wheel:
           Value: true
@@ -144,16 +163,24 @@ Visualization Manager:
                   armor_support_frame_3:
                     armor_3:
                       {}
-                  front_left_wheel:
-                    {}
-                  front_right_wheel:
-                    {}
+                  front_left_mount:
+                    front_left_steering:
+                      front_left_wheel:
+                        {}
+                  front_right_mount:
+                    front_right_steering:
+                      front_right_wheel:
+                        {}
                   light_indicator:
                     {}
-                  rear_left_wheel:
-                    {}
-                  rear_right_wheel:
-                    {}
+                  rear_left_mount:
+                    rear_left_steering:
+                      rear_left_wheel:
+                        {}
+                  rear_right_mount:
+                    rear_right_steering:
+                      rear_right_wheel:
+                        {}
                 gimbal_pitch:
                   front_industrial_camera:
                     front_industrial_camera_optical_frame:
@@ -641,7 +668,13 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /clicked_point
-    - Class: nav2_rviz_plugins/GoalTool
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: goal_pose
   Transformation:
     Current:
       Class: rviz_default_plugins/TF

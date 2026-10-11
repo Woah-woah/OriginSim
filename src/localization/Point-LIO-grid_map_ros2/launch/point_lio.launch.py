@@ -19,7 +19,6 @@ def generate_launch_description():
     point_lio_remappings = remappings + [("Odometry", "odom")]
 
     namespace = LaunchConfiguration("namespace")
-    use_rviz = LaunchConfiguration("rviz")
     point_lio_cfg_dir = LaunchConfiguration("point_lio_cfg_dir")
 
     point_lio_dir = get_package_share_directory("point_lio_with_grid_map")
@@ -56,16 +55,12 @@ def generate_launch_description():
         )
     declare_save_pcd = DeclareLaunchArgument(
         'pcd_save.pcd_save_en', 
-        default_value='False',
+        default_value='True',
         )
     declare_namespace = DeclareLaunchArgument(
         "namespace",
         default_value="",
         description="Namespace for the node",
-    )
-
-    declare_rviz = DeclareLaunchArgument(
-        "rviz", default_value="True", description="Flag to launch RViz."
     )
 
     declare_point_lio_cfg_dir = DeclareLaunchArgument(
@@ -91,12 +86,25 @@ def generate_launch_description():
                 'filter_size_map': filter_size_map,  # Options: 0.5, 0.3, 0.15, 0.1
                 # 'cube_side_length': 1000.0,  # Option: 1000
                 # 'runtime_pos_log_enable': False,  # Option: True
-                'pcd_save.pcd_save_en': False,
+                'pcd_save.pcd_save_en': save_pcd,
                 'preprocess.blind': blind
             }, 
         ],
         remappings=point_lio_remappings,
         output="screen",
+    )
+
+    start_lio_rviz = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="nav2_rviz",
+        arguments=[
+            "-d", os.path.join(point_lio_dir, "rviz_cfg", "loam_livox.rviz"),
+            "--ros-args", "--log-level", "error",
+        ],
+        parameters=[{"use_sim_time": True}],
+        output="screen",
+        remappings=remappings
     )
 
     ld = LaunchDescription(
@@ -108,16 +116,10 @@ def generate_launch_description():
             declare_surf,
             declare_map,
             declare_save_pcd,
-            declare_rviz,
             declare_point_lio_cfg_dir,
             start_point_lio_node,
+            # start_lio_rviz
         ]
     )
-
-    # ld.add_action()
-    # ld.add_action(declare_rviz)
-    # ld.add_action(declare_point_lio_cfg_dir)
-    # ld.add_action(start_point_lio_node)
-    # ld.add_action(start_rviz_node)
 
     return ld
