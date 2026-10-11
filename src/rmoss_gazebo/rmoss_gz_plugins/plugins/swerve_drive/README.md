@@ -42,6 +42,13 @@ A 0.002 rad steering deadband and 0.005 m/s rolling-speed deadband suppress
 small corrections near rest. These limits smooth starts, reversals and stops;
 they do not lock the chassis attitude or bypass wheel contact physics.
 
+At rest (including startup and command timeout), wheels brake before steering
+tangent to a circle around the chassis center. For the square layout the
+front-left/rear-right wheels park at -45 degrees and front-right/rear-left at
++45 degrees relative to chassis +X, modulo 180 degrees. The nearest equivalent
+orientation is selected with the existing steering rate and acceleration limits.
+A stationary wheel during a nonzero chassis maneuver retains its heading.
+
 `command_timeout` requests zero wheel speed after 0.5 simulation seconds without
 a Gazebo command. Wheels then decelerate at the configured rate, so stopping is
 not instantaneous. The existing upstream controller republishes its cached ROS command;

@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 from sdformat_tools.xmacro4sdf import XMLMacro4sdf
 
@@ -49,14 +50,16 @@ def start(name, args):
 try:
     start('gz', ['gz', 'sim', '-s', '-r', str(folder / 'world.sdf')])
     start('bridge', ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
-        '/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry', '/cmd_vel@geometry_msgs/msg/Twist[gz.msgs.Twist'])
+        '/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry', '/cmd_vel@geometry_msgs/msg/Twist[gz.msgs.Twist',
+        '/world/default/model/red_standard_robot1/joint_state@sensor_msgs/msg/JointState[gz.msgs.Model'])
     base = start('base', ['ros2', 'run', 'rmoss_gz_base', 'rmua19_robot_base', '--ros-args',
         '--params-file', str(Path(get_package_share_directory('rmu_gazebo_simulator')) / 'config/base_params.yaml'), '-p', 'robot_name:=red_standard_robot1'])
     rclpy.init()
     node = rclpy.create_node('swerve_stability_test')
-    samples, commands = [], []
+    samples, commands, joints = [], [], []
     node.create_subscription(Odometry, '/odometry', samples.append, 100)
     node.create_subscription(Twist, '/cmd_vel', commands.append, 100)
+    node.create_subscription(JointState, '/world/default/model/red_standard_robot1/joint_state', joints.append, 100)
     pub = node.create_publisher(Twist, '/cmd_vel_chassis', 10)
     def run(seconds, velocity=None):
         end, next_send = time.monotonic() + seconds, 0
@@ -67,7 +70,20 @@ try:
                 pub.publish(msg)
                 next_send = time.monotonic() + .02
             rclpy.spin_once(node, timeout_sec=.005)
-    run(5, (0., 0., 0.))
+    def check_parked(label):
+        assert joints, 'missing wheel joint feedback'
+        state = joints[-1]
+        positions = dict(zip(state.name, state.position))
+        velocities = dict(zip(state.name, state.velocity))
+        for prefix, degrees in [('front_left', -45), ('front_right', 45),
+                                ('rear_left', 45), ('rear_right', -45)]:
+            angle = positions[prefix + '_steering_joint']
+            assert abs(math.remainder(angle - math.radians(degrees), math.pi)) < .01, (label, prefix, angle)
+            assert abs(velocities[prefix + '_wheel_joint']) < .02, (label, prefix, 'wheel still rolling')
+        print(label, 'tangential 45-degree parking: OK', flush=True)
+    run(5)
+    check_parked('startup without ROS command')
+    run(1, (0., 0., 0.))
     assert samples and commands, 'missing original speed chain or odometry'
     summary = []
     for name, velocity in [('forward', (.8, 0., 0.)), ('lateral', (0., .8, 0.)),
@@ -98,12 +114,15 @@ try:
         assert max(abs(a-b) for a,b in zip(target,observed)) < .15
         if '--check-stability' in sys.argv:
             assert peak < (8. if '--bump' in sys.argv else 3.), 'excessive chassis tilt'
+        if name == 'stop':
+            check_parked('zero command')
     run(2, (.8, 0., 0.))
     os.killpg(base.pid, signal.SIGINT)
     base.wait(timeout=10)
-    run(3)
+    run(4)
     twist = samples[-1].twist.twist
     assert max(abs(twist.linear.x), abs(twist.linear.y), abs(twist.angular.z)) < .08
+    check_parked('command timeout')
     print('PASS; peak tilt=', max(x[1] for x in summary), 'transport timeout stop OK', flush=True)
 finally:
     for p in reversed(processes):

@@ -121,6 +121,11 @@ public:
         command = this->target;
     }
     const double pi = std::acos(-1.0);
+    const bool idle = std::hypot(command.linear().x(), command.linear().y()) +
+        0.5 * std::hypot(this->wheelbase, this->track) *
+        std::abs(command.angular().z()) <= 0.005;
+    const bool stopped = std::all_of(this->wheelSpeeds.begin(), this->wheelSpeeds.end(),
+        [](double speed) { return std::abs(speed) < 1e-3; });
     for (size_t i = 0; i < this->wheels.size(); ++i)
     {
       const auto *position = ecm.Component<components::JointPosition>(this->steering[i]);
@@ -147,6 +152,12 @@ public:
       else
       {
         speed = 0;
+        if (idle && stopped)
+        {
+          // Brake before parking tangent to a circle around the chassis center.
+          // Modulo pi selects the nearest equivalent wheel orientation.
+          this->headings[i] = angle + std::remainder(std::atan2(x, -y) - angle, pi);
+        }
         error = std::remainder(this->headings[i] - angle, 2 * pi);
       }
       const double steeringTarget = std::abs(error) < 0.002 ? 0 :
