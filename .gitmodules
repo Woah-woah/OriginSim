@@ -1,9 +1,3 @@
-[submodule "src/navigation/dynamic_layer"]
-	path = src/navigation/dynamic_layer
-	url = git@github.com:Woah-woah/dynamic_layer.git
-[submodule "src/navigation/terrain_layer"]
-	path = src/navigation/terrain_layer
-	url = git@github.com:Woah-woah/TerrainLayer.git
 [submodule "src/navigation/topology_global_planner"]
 	path = src/navigation/topology_global_planner
 	url = git@github.com:Woah-woah/topology_global_planner.git
