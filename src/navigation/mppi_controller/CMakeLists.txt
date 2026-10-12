@@ -28,8 +28,7 @@ set(dependencies_pkgs
   nav_msgs
   std_msgs
   angles
-  nav2_costmap_2d
-  nav2_util
+  map_server
   tf2_geometry_msgs
   tf2_eigen
   tf2_ros

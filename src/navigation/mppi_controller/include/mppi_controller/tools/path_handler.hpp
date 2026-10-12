@@ -27,9 +27,9 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "builtin_interfaces/msg/time.hpp"
-#include "nav2_costmap_2d/costmap_2d.hpp"
+#include "map_server/costmap_2d.hpp"
 #include "mppi_controller/costmap_config.hpp"
-#include "nav2_util/geometry_utils.hpp"
+#include "mppi_controller/tools/path_geometry.hpp"
 #include "mppi_controller/exceptions.hpp"
 
 #include "mppi_controller/tools/parameters_handler.hpp"
@@ -68,7 +68,7 @@ public:
     */
   void initialize(
     rclcpp::Node::WeakPtr parent, const std::string & name,
-    nav2_costmap_2d::Costmap2D *,
+    map_server::Costmap2D *,
     std::shared_ptr<tf2_ros::Buffer>, ParametersHandler *,
     const CostmapConfig & costmap_config = {});
 
@@ -149,7 +149,7 @@ protected:
   bool isWithinInversionTolerances(const geometry_msgs::msg::PoseStamped & robot_pose);
 
   std::string name_;
-  nav2_costmap_2d::Costmap2D * costmap_{nullptr};
+  map_server::Costmap2D * costmap_{nullptr};
   CostmapConfig costmap_config_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   ParametersHandler * parameters_handler_;
@@ -158,7 +158,7 @@ protected:
   nav_msgs::msg::Path global_plan_up_to_inversion_;
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
 
-  double max_robot_pose_search_dist_{0};
+  double max_robot_pose_search_dist_{0};  // Zero uses the current costmap extent.
   double prune_distance_{0};
   double transform_tolerance_{0};
   float inversion_xy_tolerance_{0.2};

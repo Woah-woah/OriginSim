@@ -8,9 +8,8 @@
 #include "nav_executor/path_planner.hpp"
 #include "nav_executor/path_executor.hpp"
 #include "nav_executor/route_monitor.hpp"
-#include "nav2_costmap_2d/costmap_2d_ros.hpp"
-#include "nav2_util/node_thread.hpp"
-#include "pluginlib/class_loader.hpp"
+#include "map_server/costmap_client.hpp"
+#include "rclcpp/parameter_map.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/u_int64.hpp"
 #include "std_srvs/srv/trigger.hpp"
@@ -26,6 +25,29 @@ void requestShutdown(int) {shutdown_requested = 1;}
 
 namespace nav_executor
 {
+// The producer and its client use the same settings from the navigation YAML.
+rclcpp::NodeOptions costmapClientOptions(
+  const std::string & filename, const std::string & producer, bool use_sim_time)
+{
+  if (filename.empty()) {return rclcpp::NodeOptions();}
+  const auto source_name = "/" + producer;
+  auto parameters = rclcpp::parameters_from_map(
+    rclcpp::parameter_map_from_yaml_file(filename, source_name.c_str()), source_name.c_str());
+  if (parameters.empty()) {
+    throw std::invalid_argument("Missing costmap settings for " + producer + " in " + filename);
+  }
+  // The launch clock override must also apply to clients inside this process.
+  bool clock_found = false;
+  for (auto & parameter : parameters) {
+    if (parameter.get_name() == "use_sim_time") {
+      parameter = rclcpp::Parameter("use_sim_time", use_sim_time);
+      clock_found = true;
+    }
+  }
+  if (!clock_found) {parameters.emplace_back("use_sim_time", use_sim_time);}
+  return rclcpp::NodeOptions().parameter_overrides(parameters);
+}
+
 // The existing planner silently disables topology on load failure. Validate the
 // schema it consumes here so bad configuration cannot silently change routing.
 void validateTopology(const std::string & filename)
@@ -72,54 +94,15 @@ void validateTopology(const std::string & filename)
   }
 }
 
-// The executable owns lifecycle transitions. Stop the planning worker before cleanup.
-class ManagedCostmap : public nav2_costmap_2d::Costmap2DROS
-{
-public:
-  ManagedCostmap(const std::string & name, bool use_sim_time)
-  : Costmap2DROS(name, use_sim_time) {}
-  void on_rcl_preshutdown() override {}
-  nav2_util::CallbackReturn on_configure(const rclcpp_lifecycle::State & state) override
-  {
-    configured_ = true;
-    return Costmap2DROS::on_configure(state);
-  }
-  nav2_util::CallbackReturn on_activate(const rclcpp_lifecycle::State & state) override
-  {
-    const auto result = Costmap2DROS::on_activate(state);
-    activated_ = result == nav2_util::CallbackReturn::SUCCESS;
-    return result;
-  }
-  void releaseResources()
-  {
-    const auto state = get_current_state();
-    if (activated_ && state.label() == "active") {
-      deactivate();
-      activated_ = false;
-    }
-    if (configured_) {
-      if (get_current_state().label() == "inactive") {
-        cleanup();
-      } else {
-        Costmap2DROS::on_cleanup(state);
-      }
-      configured_ = false;
-    }
-  }
-
-private:
-  bool configured_{false};
-  bool activated_{false};
-};
-
 class NavExecutor : public rclcpp::Node
 {
 public:
-  explicit NavExecutor(std::shared_ptr<ManagedCostmap> costmap)
+  explicit NavExecutor(std::shared_ptr<map_server::CostmapClient> costmap)
   : Node("nav_executor"), costmap_(std::move(costmap)),
     tasks_(declare_parameter("goal_tolerance", 0.02), declare_parameter("retry_delay", 1.0),
       declare_parameter("route_monitor.replan_cooldown", 2.0))
   {
+    declare_parameter("log_enbaled", true);
     planning_timeout_ = declare_parameter("planning_timeout", 5.0);
     const double tick_frequency = declare_parameter("tick_frequency", 20.0);
     if (!std::isfinite(planning_timeout_) || planning_timeout_ <= 0.0 ||
@@ -168,7 +151,7 @@ public:
         // One snapshot for ALL topology segments. Live map updates keep running.
         auto * live = costmap_->getCostmap();
         {
-          std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*live->getMutex());
+          std::unique_lock<map_server::Costmap2D::mutex_t> lock(*live->getMutex());
           snapshot_ = *live;
         }
         if (snapshot_.getSizeInCellsX() < 3 || snapshot_.getSizeInCellsY() < 3) {
@@ -188,25 +171,8 @@ public:
       [this]() {
         if (!rclcpp::ok()) {return;}
         try {
-          if (!activation_attempted_) {
-            // Avoid blocking activation on absent localization, including when
-            // the simulation clock is paused. Keep cancellation/shutdown live.
-            if (!costmap_->getTfBuffer()->canTransform(
-                global_frame_, costmap_->getBaseFrameID(), tf2::TimePointZero))
-            {
-              RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                "Waiting for TF from %s to %s", costmap_->getBaseFrameID().c_str(),
-                global_frame_.c_str());
-              return;
-            }
-            activation_attempted_ = true;
-            const auto & state = costmap_->activate();
-            if (state.label() != "active") {
-              RCLCPP_ERROR(get_logger(), "Global costmap activation failed");
-            }
-          }
-          if (rclcpp::ok()) {planner_executor_.spin_some();}
-          ready_ = costmap_->get_current_state().label() == "active" && costmap_->isCurrent();
+          planner_executor_.spin_some();
+          ready_ = costmap_->isCurrent();
         } catch (const std::exception & exception) {
           ready_ = false;
           RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
@@ -293,12 +259,12 @@ public:
     publishTask();
   }
 
-  void initializeExecutor(const std::shared_ptr<ManagedCostmap> & local_costmap)
+  void initializeExecutor(const std::shared_ptr<map_server::CostmapClient> & local_costmap)
   {
     executor_ = std::make_unique<PathExecutor>(shared_from_this(), local_costmap,
       [this]() {
-        if (!ready_ || costmap_->get_current_state().label() != "active") {return false;}
-        std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap_->getCostmap()->getMutex());
+        if (!ready_) {return false;}
+        std::unique_lock<map_server::Costmap2D::mutex_t> lock(*costmap_->getCostmap()->getMutex());
         return costmap_->isCurrent();
       },
       [this](PlanIdentity identity, const std::string & error) {
@@ -370,21 +336,22 @@ private:
     goal_id_pub_->publish(number);
     number.data = tasks_.generation();
     generation_pub_->publish(number);
-    RCLCPP_INFO(get_logger(),
-      "Task state=%s goal_id=%lu plan_generation=%lu route_replan_count=%lu reason=%s error=%s",
-      TaskManager::stateName(tasks_.state()), static_cast<unsigned long>(tasks_.identity().goal_id),
-      static_cast<unsigned long>(tasks_.generation()),
-      static_cast<unsigned long>(tasks_.replanCount()),
-      TaskManager::reasonName(tasks_.lastReplanReason()), tasks_.error().c_str());
+    if (get_parameter("log_enbaled").as_bool()) {
+      RCLCPP_INFO(get_logger(),
+        "Task state=%s goal_id=%lu plan_generation=%lu route_replan_count=%lu reason=%s error=%s",
+        TaskManager::stateName(tasks_.state()), static_cast<unsigned long>(tasks_.identity().goal_id),
+        static_cast<unsigned long>(tasks_.generation()),
+        static_cast<unsigned long>(tasks_.replanCount()),
+        TaskManager::reasonName(tasks_.lastReplanReason()), tasks_.error().c_str());
+    }
   }
 
-  std::shared_ptr<ManagedCostmap> costmap_;
+  std::shared_ptr<map_server::CostmapClient> costmap_;
   TaskManager tasks_;
   std::string global_frame_;
   double planning_timeout_;
   std::atomic<bool> ready_{false};
-  bool activation_attempted_{false};  // Planning thread only.
-  nav2_costmap_2d::Costmap2D snapshot_;
+  map_server::Costmap2D snapshot_;
   rclcpp::Node::SharedPtr planner_node_;
   rclcpp::executors::SingleThreadedExecutor planner_executor_;
   std::unique_ptr<topology_global_planner::TopologyGlobalPlanner> planner_;
@@ -405,74 +372,38 @@ private:
 
 int main(int argc, char ** argv)
 {
-  // Keep ROS communications alive while the worker and lifecycle resources
+  // Keep ROS communications alive while the planning worker
   // are stopped. The default signal handler shuts the context down too early.
   rclcpp::init(argc, argv, rclcpp::InitOptions{}, rclcpp::SignalHandlerOptions::None);
   std::signal(SIGINT, requestShutdown);
   std::signal(SIGTERM, requestShutdown);
   int exit_code = 0;
-  std::shared_ptr<nav_executor::ManagedCostmap> costmap;
-  std::shared_ptr<nav_executor::ManagedCostmap> local_costmap;
-  std::unique_ptr<nav2_util::NodeThread> costmap_thread;
-  std::unique_ptr<nav2_util::NodeThread> local_costmap_thread;
-  // ROS callback groups retain weak subscription control blocks until the base
-  // node is destroyed. Keep their plugin code loaded beyond Costmap2DROS's
-  // member ClassLoader destruction, including optimized builds.
-  pluginlib::ClassLoader<nav2_costmap_2d::Layer> plugin_libraries(
-    "nav2_costmap_2d", "nav2_costmap_2d::Layer");
   try {
-    // The named Costmap2DROS constructor adds a use_sim_time CLI override,
-    // which takes precedence over YAML. Resolve the executor's configured
-    // clock before creating either map and explicitly pass the same time mode.
-    const bool use_sim_time = []() {
-        const auto parameters = std::make_shared<rclcpp::Node>("nav_executor");
-        return parameters->get_parameter("use_sim_time").as_bool();
-      }();
-    costmap = std::make_shared<nav_executor::ManagedCostmap>("global_costmap", use_sim_time);
-    local_costmap = std::make_shared<nav_executor::ManagedCostmap>("local_costmap", use_sim_time);
-    costmap_thread = std::make_unique<nav2_util::NodeThread>(costmap);
-    local_costmap_thread = std::make_unique<nav2_util::NodeThread>(local_costmap);
-    if (costmap->configure().label() != "inactive") {
-      throw std::runtime_error("Global costmap configuration failed");
-    }
-    if (local_costmap->configure().label() != "inactive") {
-      throw std::runtime_error("Local costmap configuration failed");
-    }
-    for (const auto & map : {costmap, local_costmap}) {
-      for (const auto & key : {"plugins", "filters"}) {
-        const auto names = map->get_parameter(key).as_string_array();
-        for (const auto & name : names) {
-          plugin_libraries.loadLibraryForClass(map->get_parameter(name + ".plugin").as_string());
-        }
-      }
-    }
-    auto node = std::make_shared<nav_executor::NavExecutor>(costmap);
-    node->initializeExecutor(local_costmap);
+    auto config = std::make_shared<rclcpp::Node>("nav_executor");
+    const auto params_file = config->declare_parameter("navigation_params_file", std::string{});
+    const bool use_sim_time = config->get_parameter("use_sim_time").as_bool();
+    config.reset();
+    auto global = std::make_shared<map_server::CostmapClient>("global_costmap_client",
+      nav_executor::costmapClientOptions(params_file, "global_costmap", use_sim_time));
+    auto local = std::make_shared<map_server::CostmapClient>("local_costmap_client",
+      nav_executor::costmapClientOptions(params_file, "local_costmap", use_sim_time));
+    auto node = std::make_shared<nav_executor::NavExecutor>(global);
+    node->initializeExecutor(local);
     rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(global);
+    executor.add_node(local);
     executor.add_node(node);
     while (rclcpp::ok() && !shutdown_requested) {
       executor.spin_once(std::chrono::milliseconds(50));
     }
     executor.remove_node(node);
-    node.reset();
+    node.reset();  // Stops planning before destroying the subscriber grids.
+    executor.remove_node(local);
+    executor.remove_node(global);
   } catch (const std::exception & exception) {
     RCLCPP_ERROR(rclcpp::get_logger("nav_executor"), "%s", exception.what());
     exit_code = 1;
   }
-  // The worker has joined; finish lifecycle transitions before context shutdown.
-  for (const auto & map : {local_costmap, costmap}) {
-    if (!map) {continue;}
-    try {
-      map->releaseResources();
-    } catch (const std::exception & exception) {
-      RCLCPP_ERROR(rclcpp::get_logger("nav_executor"), "Costmap cleanup failed: %s", exception.what());
-      exit_code = 1;
-    }
-  }
-  local_costmap_thread.reset();
-  local_costmap.reset();
-  costmap_thread.reset();
-  costmap.reset();
   rclcpp::shutdown();
   return exit_code;
 }

@@ -1,10 +1,8 @@
 #include "nav_executor/path_executor.hpp"
 
-#include <atomic>
 #include <cmath>
 #include <optional>
 #include <stdexcept>
-#include <thread>
 #include <utility>
 
 #include "mppi_controller/controller.hpp"
@@ -91,7 +89,7 @@ class PathExecutor::Impl
 {
 public:
   Impl(const rclcpp::Node::SharedPtr & node,
-    std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap,
+    std::shared_ptr<map_server::CostmapClient> costmap,
     std::function<bool()> global_ready, Failure failure, Success success,
     Confirmation confirmation, Observation observation)
   : node_(node), costmap_(std::move(costmap)), global_ready_(std::move(global_ready)),
@@ -128,20 +126,10 @@ public:
     config.global_frame = costmap_->getGlobalFrameID();
     config.robot_base_frame = costmap_->getBaseFrameID();
     config.footprint = costmap_->getRobotFootprint();
-    config.robot_radius = costmap_->get_parameter("robot_radius").as_double();
-    config.track_unknown = costmap_->get_parameter("track_unknown_space").as_bool();
-    const auto plugins = costmap_->get_parameter("plugins").as_string_array();
-    for (const auto & plugin : plugins) {
-      if (costmap_->get_parameter(plugin + ".plugin").as_string() ==
-        "nav2_costmap_2d::InflationLayer" &&
-        costmap_->get_parameter(plugin + ".enabled").as_bool())
-      {
-        config.inflation_radius = costmap_->get_parameter(plugin + ".inflation_radius").as_double();
-        config.inflation_cost_scaling_factor =
-          costmap_->get_parameter(plugin + ".cost_scaling_factor").as_double();
-        break;
-      }
-    }
+    config.robot_radius = costmap_->settings().robot_radius;
+    config.track_unknown = costmap_->settings().track_unknown;
+    config.inflation_radius = costmap_->settings().inflation_radius;
+    config.inflation_cost_scaling_factor = costmap_->settings().cost_scaling_factor;
     // Reject open-loop operation: MPPI must use measured robot speed.
     if (!node->has_parameter("FollowPath.open_loop")) {
       node->declare_parameter("FollowPath.open_loop", false);
@@ -168,32 +156,13 @@ public:
     timer_ = node->create_wall_timer(std::chrono::duration<double>(1.0 / frequency_),
       [this]() {tick();});
     setState(ExecutionState::IDLE, "");
-    // Do not let absent local TF block goal/cancel callbacks or planning.
-    activation_ = std::thread([this]() {
-      try {
-        while (!stopping_ && rclcpp::ok()) {
-          std::string error;
-          if (costmap_->getTfBuffer()->canTransform(costmap_->getGlobalFrameID(),
-              costmap_->getBaseFrameID(), tf2::TimePointZero, &error))
-          {
-            active_ = costmap_->activate().label() == "active";
-            if (!active_) {RCLCPP_ERROR(logger_, "Local costmap activation failed");}
-            return;
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-      } catch (const std::exception & exception) {
-        RCLCPP_ERROR(logger_, "Local costmap activation failed: %s", exception.what());
-      }
-    });
+
   }
 
   ~Impl()
   {
     timer_.reset();
     publishZero();
-    stopping_ = true;
-    if (activation_.joinable()) {activation_.join();}
   }
 
   void publishZero() {cmd_pub_->publish(geometry_msgs::msg::Twist{});}
@@ -295,8 +264,7 @@ public:
     if (!path_) {publishZero(); return;}
     if (!confirmation_(identity_)) {stop("TaskManager revoked execution path"); return;}
     try {
-      if (!active_ || costmap_->get_current_state().label() != "active" ||
-        !global_ready_() || !costmap_->isCurrent()) {
+      if (!global_ready_() || !costmap_->isCurrent()) {
         throw std::runtime_error("Global or local costmap unavailable or not current");
       }
       geometry_msgs::msg::PoseStamped pose;
@@ -332,7 +300,7 @@ public:
       }
       auto * grid = costmap_->getCostmap();
       {
-        std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*grid->getMutex());
+        std::unique_lock<map_server::Costmap2D::mutex_t> lock(*grid->getMutex());
         unsigned int mx, my;
         if (grid->getSizeInCellsX() < 3 || grid->getSizeInCellsY() < 3 ||
           !grid->worldToMap(pose.pose.position.x, pose.pose.position.y, mx, my))
@@ -351,8 +319,7 @@ public:
       checkStamp(pose.header.stamp, tf_timeout_, "Robot TF", true);
       checkStamp(path_tf.header.stamp, tf_timeout_, "Path TF", true);
       readSpeed();
-      if (costmap_->get_current_state().label() != "active" ||
-        !global_ready_() || !costmap_->isCurrent()) {
+      if (!global_ready_() || !costmap_->isCurrent()) {
         throw std::runtime_error("Costmap invalidated during MPPI computation");
       }
       // Report validated controller feedback in the confirmed global path frame.
@@ -374,7 +341,7 @@ public:
   }
 
   rclcpp::Node::WeakPtr node_;
-  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_;
+  std::shared_ptr<map_server::CostmapClient> costmap_;
   std::function<bool()> global_ready_;
   Failure failure_;
   Success success_;
@@ -394,12 +361,10 @@ public:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_, error_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
-  std::atomic<bool> stopping_{false}, active_{false};
-  std::thread activation_;
 };
 
 PathExecutor::PathExecutor(const rclcpp::Node::SharedPtr & node,
-  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> local_costmap,
+  std::shared_ptr<map_server::CostmapClient> local_costmap,
   std::function<bool()> global_map_ready, Failure failure, Success success,
   Confirmation confirmation, Observation observation)
 : impl_(std::make_unique<Impl>(node, std::move(local_costmap), std::move(global_map_ready),

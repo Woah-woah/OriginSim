@@ -25,7 +25,7 @@
 #include <xtensor/xnoalias.hpp>
 
 #include "mppi_controller/exceptions.hpp"
-#include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
+#include "map_server/cost_values.hpp"
 
 namespace mppi
 {
@@ -35,7 +35,7 @@ using xt::evaluation_strategy::immediate;
 
 void Optimizer::initialize(
   rclcpp::Node::WeakPtr parent, const std::string & name,
-  nav2_costmap_2d::Costmap2D * costmap,
+  map_server::Costmap2D * costmap,
   ParametersHandler * param_handler, const CostmapConfig & costmap_config)
 {
   parent_ = parent;
@@ -486,7 +486,7 @@ void Optimizer::setMotionModel(const std::string & model)
 void Optimizer::setSpeedLimit(double speed_limit, bool percentage)
 {
   auto & s = settings_;
-  if (speed_limit == nav2_costmap_2d::NO_SPEED_LIMIT) {
+  if (speed_limit == map_server::NO_SPEED_LIMIT) {
     s.constraints.vx_max = s.base_constraints.vx_max;
     s.constraints.vx_min = s.base_constraints.vx_min;
     s.constraints.vy = s.base_constraints.vy;

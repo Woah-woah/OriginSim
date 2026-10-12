@@ -19,7 +19,7 @@ namespace mppi
 
 void CriticManager::on_configure(
   rclcpp::Node::WeakPtr parent, const std::string & name,
-  nav2_costmap_2d::Costmap2D * costmap, ParametersHandler * param_handler,
+  map_server::Costmap2D * costmap, ParametersHandler * param_handler,
   const CostmapConfig & costmap_config)
 {
   parent_ = parent;

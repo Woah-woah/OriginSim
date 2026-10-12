@@ -45,9 +45,8 @@
 
 #include "rclcpp/rclcpp.hpp"
 
-#include "nav2_util/node_utils.hpp"
 #include "mppi_controller/goal_checker.hpp"
-#include "nav2_costmap_2d/costmap_2d.hpp"
+#include "map_server/costmap_2d.hpp"
 #include "mppi_controller/costmap_config.hpp"
 
 #include "mppi_controller/models/optimizer_settings.hpp"
@@ -346,7 +345,7 @@ inline void setPathFurthestPointIfNotSet(CriticData & data)
  */
 inline void findPathCosts(
   CriticData & data,
-  nav2_costmap_2d::Costmap2D * costmap, bool tracking_unknown = false)
+  map_server::Costmap2D * costmap, bool tracking_unknown = false)
 {
   unsigned int map_x, map_y;
   const size_t path_segments_count = data.path.x.shape(0) - 1;
@@ -358,13 +357,13 @@ inline void findPathCosts(
     }
 
     switch (costmap->getCost(map_x, map_y)) {
-      case (nav2_costmap_2d::LETHAL_OBSTACLE):
+      case (map_server::LETHAL_OBSTACLE):
         (*data.path_pts_valid)[idx] = false;
         continue;
-      case (nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE):
+      case (map_server::INSCRIBED_INFLATED_OBSTACLE):
         (*data.path_pts_valid)[idx] = false;
         continue;
-      case (nav2_costmap_2d::NO_INFORMATION):
+      case (map_server::NO_INFORMATION):
         (*data.path_pts_valid)[idx] = tracking_unknown ? true : false;
         continue;
     }
@@ -379,7 +378,7 @@ inline void findPathCosts(
  */
 inline void setPathCostsIfNotSet(
   CriticData & data,
-  nav2_costmap_2d::Costmap2D * costmap, bool tracking_unknown = false)
+  map_server::Costmap2D * costmap, bool tracking_unknown = false)
 {
   if (!data.path_pts_valid) {
     findPathCosts(data, costmap, tracking_unknown);

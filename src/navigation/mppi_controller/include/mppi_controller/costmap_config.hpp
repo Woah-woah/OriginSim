@@ -7,8 +7,8 @@
 #include <string>
 #include <vector>
 
-#include "nav2_costmap_2d/cost_values.hpp"
-#include "nav2_costmap_2d/footprint.hpp"
+#include "map_server/cost_values.hpp"
+#include "map_server/footprint.hpp"
 
 namespace mppi
 {
@@ -27,13 +27,13 @@ struct CostmapConfig
   double inscribedRadius() const
   {
     return footprint.empty() ? robot_radius :
-           nav2_costmap_2d::calculateMinAndMaxDistances(footprint).first;
+           map_server::calculateMinAndMaxDistances(footprint).first;
   }
 
   double circumscribedRadius() const
   {
     return footprint.empty() ? robot_radius :
-           nav2_costmap_2d::calculateMinAndMaxDistances(footprint).second;
+           map_server::calculateMinAndMaxDistances(footprint).second;
   }
 
   float circumscribedCost() const
@@ -43,7 +43,7 @@ struct CostmapConfig
       return -1.0f;  // No valid shortcut: check the full footprint instead.
     }
     if (radius <= inscribedRadius()) {
-      return nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+      return map_server::INSCRIBED_INFLATED_OBSTACLE;
     }
     return static_cast<unsigned char>(252.0 * std::exp(
              -inflation_cost_scaling_factor * (radius - inscribedRadius())));

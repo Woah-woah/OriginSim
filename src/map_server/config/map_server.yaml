@@ -1,0 +1,56 @@
+# Standalone map producer defaults; startup uses bringup/params/nav2_params.yaml.
+map_server:
+  ros__parameters:
+    use_sim_time: true
+    yaml_filename: ''
+    frame_id: map
+    map_topic: /map
+global_costmap:
+  ros__parameters:
+    use_sim_time: true
+    global_frame: map
+    robot_base_frame: base_link_fake
+    robot_radius: 0.15
+    footprint: ''
+    footprint_padding: 0.01
+    track_unknown_space: true
+    inflation_radius: 0.55
+    cost_scaling_factor: 10.0
+    map_topic: /map
+    rolling_window: false
+    footprint_clearing_enabled: true
+    lethal_cost_threshold: 100
+    trinary_costmap: true
+    inflate_unknown: false
+    inflate_around_unknown: false
+    update_frequency: 10.0
+    publish_frequency: 5.0
+    transform_tolerance: 0.5
+    costmap_topic: /global_costmap/costmap_raw
+    costmap_timeout: 1.0
+local_costmap:
+  ros__parameters:
+    use_sim_time: true
+    global_frame: odom
+    robot_base_frame: base_link_fake
+    robot_radius: 0.15
+    footprint: ''
+    footprint_padding: 0.01
+    track_unknown_space: false
+    inflation_radius: 0.55
+    cost_scaling_factor: 10.0
+    map_topic: /map
+    rolling_window: true
+    footprint_clearing_enabled: true
+    lethal_cost_threshold: 100
+    trinary_costmap: true
+    inflate_unknown: false
+    inflate_around_unknown: false
+    update_frequency: 10.0
+    publish_frequency: 5.0
+    transform_tolerance: 0.5
+    costmap_topic: /local_costmap/costmap_raw
+    costmap_timeout: 1.0
+    width: 9.0
+    height: 9.0
+    resolution: 0.05

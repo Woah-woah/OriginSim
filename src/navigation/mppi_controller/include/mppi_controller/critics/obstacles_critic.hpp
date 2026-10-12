@@ -18,7 +18,7 @@
 #include <memory>
 #include <string>
 
-#include "nav2_costmap_2d/footprint_collision_checker.hpp"
+#include "map_server/footprint_collision_checker.hpp"
 #include "mppi_controller/critic_function.hpp"
 #include "mppi_controller/models/state.hpp"
 #include "mppi_controller/tools/utils.hpp"
@@ -82,7 +82,7 @@ protected:
   float findCircumscribedCost();
 
 protected:
-  nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>
+  map_server::FootprintCollisionChecker<map_server::Costmap2D *>
   collision_checker_{nullptr};
 
   bool consider_footprint_{true};

@@ -22,7 +22,6 @@
 #include <utility>
 #include <vector>
 
-#include "nav2_util/node_utils.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/parameter_value.hpp"
 
@@ -203,8 +202,9 @@ void ParametersHandler::getParam(
 {
   auto node = node_.lock();
 
-  nav2_util::declare_parameter_if_not_declared(
-    node, name, rclcpp::ParameterValue(default_value));
+  if (!node->has_parameter(name)) {
+    node->declare_parameter(name, rclcpp::ParameterValue(default_value));
+  }
 
   setParam<ParamT>(setting, name, node);
 

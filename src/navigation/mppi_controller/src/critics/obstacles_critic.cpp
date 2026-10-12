@@ -178,7 +178,7 @@ bool ObstaclesCritic::inCollision(float cost) const
   bool is_tracking_unknown =
     costmap_config_.track_unknown;
 
-  using namespace nav2_costmap_2d; // NOLINT
+  using namespace map_server; // NOLINT
   switch (static_cast<unsigned char>(cost)) {
     case (LETHAL_OBSTACLE):
       return true;
@@ -198,7 +198,7 @@ CollisionCost ObstaclesCritic::costAtPose(float x, float y, float theta)
   collision_cost.using_footprint = false;
   unsigned int x_i, y_i;
   if (!collision_checker_.worldToMap(x, y, x_i, y_i)) {
-    cost = nav2_costmap_2d::NO_INFORMATION;
+    cost = map_server::NO_INFORMATION;
     return collision_cost;
   }
   cost = collision_checker_.pointCost(x_i, y_i);

@@ -19,7 +19,7 @@
 #include <memory>
 
 #include "rclcpp/rclcpp.hpp"
-#include "nav2_costmap_2d/costmap_2d.hpp"
+#include "map_server/costmap_2d.hpp"
 #include "mppi_controller/costmap_config.hpp"
 
 #include "mppi_controller/tools/parameters_handler.hpp"
@@ -67,7 +67,7 @@ public:
     rclcpp::Node::WeakPtr parent,
     const std::string & parent_name,
     const std::string & name,
-    nav2_costmap_2d::Costmap2D * costmap,
+    map_server::Costmap2D * costmap,
     ParametersHandler * param_handler, const CostmapConfig & costmap_config = {})
   {
     parent_ = parent;
@@ -107,7 +107,7 @@ protected:
   bool enabled_;
   std::string name_, parent_name_;
   rclcpp::Node::WeakPtr parent_;
-  nav2_costmap_2d::Costmap2D * costmap_{nullptr};
+  map_server::Costmap2D * costmap_{nullptr};
   CostmapConfig costmap_config_;
 
   ParametersHandler * parameters_handler_;

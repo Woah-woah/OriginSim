@@ -30,7 +30,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 
-#include "nav2_costmap_2d/costmap_2d.hpp"
+#include "map_server/costmap_2d.hpp"
 #include "mppi_controller/costmap_config.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -70,7 +70,7 @@ public:
     */
   void on_configure(
     rclcpp::Node::WeakPtr parent, const std::string & name,
-    nav2_costmap_2d::Costmap2D *, ParametersHandler *,
+    map_server::Costmap2D *, ParametersHandler *,
     const CostmapConfig & costmap_config = {});
 
   /**
@@ -97,7 +97,7 @@ protected:
 
 protected:
   rclcpp::Node::WeakPtr parent_;
-  nav2_costmap_2d::Costmap2D * costmap_{nullptr};
+  map_server::Costmap2D * costmap_{nullptr};
   CostmapConfig costmap_config_;
   std::string name_;
 

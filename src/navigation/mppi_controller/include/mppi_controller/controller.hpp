@@ -57,7 +57,7 @@ public:
   void initialize(
     const rclcpp::Node::WeakPtr & parent,
     std::string name, const std::shared_ptr<tf2_ros::Buffer> tf,
-    nav2_costmap_2d::Costmap2D * costmap, const mppi::CostmapConfig & costmap_config = {});
+    map_server::Costmap2D * costmap, const mppi::CostmapConfig & costmap_config = {});
 
   /**
     * @brief Release algorithm resources
@@ -105,7 +105,7 @@ protected:
   std::string name_;
   rclcpp::Node::WeakPtr parent_;
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
-  nav2_costmap_2d::Costmap2D * costmap_{nullptr};
+  map_server::Costmap2D * costmap_{nullptr};
   mppi::CostmapConfig costmap_config_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
 

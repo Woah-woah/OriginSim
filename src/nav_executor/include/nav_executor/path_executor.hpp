@@ -5,7 +5,7 @@
 #include <string>
 
 #include "nav_executor/task_manager.hpp"
-#include "nav2_costmap_2d/costmap_2d_ros.hpp"
+#include "map_server/costmap_client.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 
 namespace nav_executor
@@ -30,7 +30,7 @@ public:
       const geometry_msgs::msg::PoseStamped &, const geometry_msgs::msg::Twist &)>;
   PathExecutor(
     const rclcpp::Node::SharedPtr & node,
-    std::shared_ptr<nav2_costmap_2d::Costmap2DROS> local_costmap,
+    std::shared_ptr<map_server::CostmapClient> local_costmap,
     std::function<bool()> global_map_ready, Failure failure, Success success,
     Confirmation confirmation, Observation observation);
   ~PathExecutor();

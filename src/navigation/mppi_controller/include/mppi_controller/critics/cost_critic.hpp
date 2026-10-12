@@ -18,7 +18,7 @@
 #include <memory>
 #include <string>
 
-#include "nav2_costmap_2d/footprint_collision_checker.hpp"
+#include "map_server/footprint_collision_checker.hpp"
 
 #include "mppi_controller/critic_function.hpp"
 #include "mppi_controller/models/state.hpp"
@@ -68,11 +68,11 @@ protected:
     }
 
     switch (static_cast<unsigned char>(score_cost)) {
-      case (nav2_costmap_2d::LETHAL_OBSTACLE):
+      case (map_server::LETHAL_OBSTACLE):
         return true;
-      case (nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE):
+      case (map_server::INSCRIBED_INFLATED_OBSTACLE):
         return consider_footprint_ ? false : true;
-      case (nav2_costmap_2d::NO_INFORMATION):
+      case (map_server::NO_INFORMATION):
         return is_tracking_unknown_ ? false : true;
     }
 
@@ -122,7 +122,7 @@ protected:
     return my * size_x_ + mx;
   }
 
-  nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>
+  map_server::FootprintCollisionChecker<map_server::Costmap2D *>
   collision_checker_{nullptr};
   float possible_collision_cost_;
 

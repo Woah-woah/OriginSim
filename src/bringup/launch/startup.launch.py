@@ -66,27 +66,14 @@ def generate_launch_description():
         )
     )
 
-    load_map_server = LoadComposableNodes(
-        target_container='container',
-        composable_node_descriptions=[
-            ComposableNode(
-                package='nav2_map_server',
-                plugin='nav2_map_server::MapServer',
-                parameters=[{'yaml_filename': os.path.join(bringup_dir, 'map', 'rmuc_2025_normalized.yaml')}],
-                name='map_server',),
-            ComposableNode(
-                package='nav2_lifecycle_manager',
-                plugin='nav2_lifecycle_manager::LifecycleManager',
-                name='lifecycle_manager_localization',
-                parameters=[{'autostart': True,
-                             'node_names': ['map_server']}]),
-         ],
-    )
-
-    nav2 = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('nav')+"/launch/bringup_launch.py"
-        )
+    load_map_server = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('map_server'), 'launch', 'map_server.launch.py')),
+        launch_arguments={
+            'map': os.path.join(bringup_dir, 'map', 'rmuc_2025_normalized.yaml'),
+            'use_sim_time': 'true',
+            'map_params_file': params_file,
+        }.items(),
     )
 
     fake_baselink = IncludeLaunchDescription(
@@ -146,10 +133,6 @@ def generate_launch_description():
              load_map_server,
              p_to_l,
              fake_baselink,
-            #  region_behavior,
-            #  TimerAction(
-            #     period=3.0,
-            #     actions=[nav2],
-            # )
+            #  region_behavior
         ]
     )

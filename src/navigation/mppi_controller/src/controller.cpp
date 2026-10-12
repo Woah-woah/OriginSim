@@ -32,7 +32,7 @@ MPPIController::~MPPIController()
 void MPPIController::initialize(
   const rclcpp::Node::WeakPtr & parent,
   std::string name, const std::shared_ptr<tf2_ros::Buffer> tf,
-  nav2_costmap_2d::Costmap2D * costmap, const mppi::CostmapConfig & costmap_config)
+  map_server::Costmap2D * costmap, const mppi::CostmapConfig & costmap_config)
 {
   if (configured_) {
     throw std::logic_error("MPPIController is already configured");
@@ -94,8 +94,8 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
     throw std::logic_error("Initialize MPPIController before computing commands");
   }
   std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
-  nav2_costmap_2d::Costmap2D * costmap = costmap_;
-  std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
+  map_server::Costmap2D * costmap = costmap_;
+  std::unique_lock<map_server::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
   geometry_msgs::msg::Pose goal = path_handler_.getTransformedGoal(robot_pose.header.stamp).pose;
 
   nav_msgs::msg::Path transformed_plan = path_handler_.transformPath(robot_pose);

@@ -16,7 +16,7 @@
 
 #include "mppi_controller/tools/path_handler.hpp"
 #include "mppi_controller/tools/utils.hpp"
-#include "nav2_costmap_2d/costmap_2d.hpp"
+#include "map_server/costmap_2d.hpp"
 #include "mppi_controller/costmap_config.hpp"
 
 namespace mppi
@@ -24,7 +24,7 @@ namespace mppi
 
 void PathHandler::initialize(
   rclcpp::Node::WeakPtr parent, const std::string & name,
-  nav2_costmap_2d::Costmap2D * costmap,
+  map_server::Costmap2D * costmap,
   std::shared_ptr<tf2_ros::Buffer> buffer, ParametersHandler * param_handler,
   const CostmapConfig & costmap_config)
 {
@@ -37,7 +37,9 @@ void PathHandler::initialize(
   parameters_handler_ = param_handler;
 
   auto getParam = parameters_handler_->getParamGetter(name_);
-  getParam(max_robot_pose_search_dist_, "max_robot_pose_search_dist", getMaxCostmapDist());
+  // Zero selects the current costmap extent. Subscriber grids can still be
+  // empty here, so their startup size must not become a permanent search limit.
+  getParam(max_robot_pose_search_dist_, "max_robot_pose_search_dist", 0.0);
   getParam(prune_distance_, "prune_distance", 1.5);
   getParam(transform_tolerance_, "transform_tolerance", 0.1);
   getParam(enforce_path_inversion_, "enforce_path_inversion", false);
@@ -52,18 +54,20 @@ std::pair<nav_msgs::msg::Path, PathIterator>
 PathHandler::getGlobalPlanConsideringBoundsInCostmapFrame(
   const geometry_msgs::msg::PoseStamped & global_pose)
 {
-  using nav2_util::geometry_utils::euclidean_distance;
+  using mppi::path_geometry::euclidean_distance;
 
   auto begin = global_plan_up_to_inversion_.poses.begin();
 
   // Limit the search for the closest pose up to max_robot_pose_search_dist on the path
+  const double search_distance = max_robot_pose_search_dist_ > 0.0 ?
+    max_robot_pose_search_dist_ : getMaxCostmapDist();
   auto closest_pose_upper_bound =
-    nav2_util::geometry_utils::first_after_integrated_distance(
+    mppi::path_geometry::first_after_integrated_distance(
     global_plan_up_to_inversion_.poses.begin(), global_plan_up_to_inversion_.poses.end(),
-    max_robot_pose_search_dist_);
+    search_distance);
 
   // Find closest point to the robot
-  auto closest_point = nav2_util::geometry_utils::min_by(
+  auto closest_point = mppi::path_geometry::min_by(
     begin, closest_pose_upper_bound,
     [&global_pose](const geometry_msgs::msg::PoseStamped & ps) {
       return euclidean_distance(global_pose, ps);
@@ -74,7 +78,7 @@ PathHandler::getGlobalPlanConsideringBoundsInCostmapFrame(
   transformed_plan.header.stamp = global_pose.header.stamp;
 
   auto pruned_plan_end =
-    nav2_util::geometry_utils::first_after_integrated_distance(
+    mppi::path_geometry::first_after_integrated_distance(
     closest_point, global_plan_up_to_inversion_.poses.end(), prune_distance_);
 
   unsigned int mx, my;

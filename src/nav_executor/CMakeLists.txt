@@ -4,7 +4,7 @@ project(nav_executor)
 find_package(ament_cmake REQUIRED)
 find_package(Threads REQUIRED)
 find_package(yaml-cpp REQUIRED)
-set(dependencies rclcpp nav2_costmap_2d nav2_util topology_global_planner
+set(dependencies rclcpp map_server topology_global_planner
   geometry_msgs nav_msgs std_msgs std_srvs tf2 tf2_geometry_msgs pluginlib mppi_controller)
 foreach(dependency IN LISTS dependencies)
   find_package(${dependency} REQUIRED)
@@ -32,6 +32,6 @@ endif()
 install(TARGETS ${PROJECT_NAME}_core nav_executor_node
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_package()
