@@ -24,7 +24,7 @@
             lidar_type: 2
             scan_line: 32
             timestamp_unit: 2                               # the unit of time/t field in the PointCloud2 rostopic: 0-second, 1-milisecond, 2-microsecond, 3-nanosecond.
-            blind: 2.0
+            blind: 0.3                                      # 过滤小于这个数范围内的点云
 
         mapping:
             imu_en: True

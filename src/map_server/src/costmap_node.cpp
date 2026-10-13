@@ -1,4 +1,5 @@
 #include "map_server/costmap_layers.hpp"
+#include "map_server/dynamic_layer.hpp"
 #include "map_server/map_geometry.hpp"
 #include "map_server/msg/costmap.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -38,6 +39,7 @@ public:
     publication_period_ = 1.0 / publish_frequency;
     tf_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_);
+    dynamic_layer_ = std::make_unique<DynamicLayer>(*this);
     const auto qos = rclcpp::QoS(1).reliable().transient_local();
     raw_pub_ = create_publisher<msg::Costmap>("costmap_raw", qos);
     visual_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("costmap", qos);
@@ -99,6 +101,7 @@ private:
             {padded.setCost(x, y, source_.getCost(sx, sy));}
           }
         }
+        current = mergeDynamic(padded);
         if (clearing_) {clearFootprint(padded, rx, ry, yaw, settings_.footprint);}
         inflate(padded, inflation_);
         output_.resizeMap(nx, ny, resolution_, ox, oy);
@@ -109,11 +112,12 @@ private:
         if (source_frame_ != settings_.global_frame)
         {throw std::invalid_argument("Global costmap frame must match /map frame");}
         output_ = source_;
+        current = mergeDynamic(output_);
         if (clearing_) {clearFootprint(output_, rx, ry, yaw, settings_.footprint);}
         inflate(output_, inflation_);
       }
-      current = true;
     } catch (const std::exception & e) {
+      current = false;
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Costmap unavailable: %s", e.what());
     }
     const auto now_steady = std::chrono::steady_clock::now();
@@ -122,6 +126,20 @@ private:
     {
       if (output_.getSizeInCellsX()) {publish(current);}
       last_current_ = current; last_publish_ = now_steady;
+    }
+  }
+
+  bool mergeDynamic(Costmap2D & grid)
+  {
+    try {
+      dynamic_layer_->apply(grid, *tf_, settings_.global_frame, transform_tolerance_);
+      return true;
+    } catch (const std::exception & e) {
+      // Keep the static view and its inflation available for diagnostics even
+      // before the first valid dynamic observation. Planning stays invalid.
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Dynamic layer unavailable; costmap current=false: %s", e.what());
+      return false;
     }
   }
 
@@ -151,6 +169,7 @@ private:
   }
 
   MapSettings settings_;
+  std::unique_ptr<DynamicLayer> dynamic_layer_;
   InflationOptions inflation_;
   Costmap2D source_, output_;
   std::string source_frame_;

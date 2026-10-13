@@ -2,8 +2,56 @@ map_server:
   ros__parameters:
     use_sim_time: true
 
+
+dynamic_map:
+  ros__parameters:
+    use_sim_time: true
+    enabled: true
+    cloud_topic: /cloud_registered
+    static_pcd: "scans_map_zmax3.pcd"
+    static_pcd_frame: map          # PCD 本身的坐标系，必须与实际地图一致
+    tracking_frame: odom           # 累积和记忆使用固定、重力对齐的坐标系
+    robot_base_frame: base_link_fake
+    resolution: 0.05
+    update_frequency: 10.0
+    input_timeout: 0.5             # ROS 时间及接收墙钟任一超时，动态层失效
+    tf_wait_timeout: 0.15
+    processing_timeout: 0.25
+    max_cloud_points: 200000
+    max_accumulated_points: 500000
+    accumulate_frames: 4
+    accumulate_duration: 0.35
+    roi:
+      min_radius: 0.4
+      max_radius: 8.0
+      min_z: -0.45                 # 相对机器人原点，沿 tracking_frame 的竖直轴
+      max_z: 0.8
+    voxel_size: 0.03
+    static_voxel_size: 0.05
+    static_distance_threshold: 0.2
+    sor:
+      neighbors: 12
+      stddev_multiplier: 2.0
+    min_density_per_m2: 400.0      # 0.05 m 栅格允许单个 Voxel 点；独立多帧由置信度确认
+    component_connection_distance: 0.55  # m，仅连接稀疏观测做分组，不填充障碍几何
+    min_component_area: 0.0075     # m²，8 邻域连通域
+    memory:
+      hit_rate: 5.0
+      decay_rate: 0.7
+      on_threshold: 0.6
+      off_threshold: 0.25
+      obstacle_timeout: 1.0
+      maximum_evidence_dt: 0.2
+    debug_clouds: false
+
+
 global_costmap:
   ros__parameters:
+    dynamic_obstacles:
+      enabled: true
+      topic: /dynamic_map/obstacles_raw
+      message_timeout: 0.5
+      observation_timeout: 0.6
     use_sim_time: true
     global_frame: map
     robot_base_frame: base_link_fake
@@ -26,8 +74,14 @@ global_costmap:
     costmap_topic: /global_costmap/costmap_raw
     costmap_timeout: 1.0
 
+
 local_costmap:
   ros__parameters:
+    dynamic_obstacles:
+      enabled: true
+      topic: /dynamic_map/obstacles_raw
+      message_timeout: 0.5
+      observation_timeout: 0.6
     use_sim_time: true
     global_frame: odom
     robot_base_frame: base_link_fake
@@ -53,6 +107,7 @@ local_costmap:
     height: 9.0
     resolution: 0.05
 
+
 nav_executor:
   ros__parameters:
     use_sim_time: true
@@ -67,7 +122,7 @@ nav_executor:
     odom_timeout: 0.5
     tf_timeout: 0.5
     control_timeout: 0.2
-    xy_goal_tolerance: 0.3
+    xy_goal_tolerance: 0.5
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
     route_monitor:
@@ -84,14 +139,14 @@ nav_executor:
       time_steps: 40       # prediction_time = time_steps × model_dt
       model_dt: 0.05       # prediction_distance ≈ prediction_time × max_speed 全向底盘应该考虑合速度
       batch_size: 1000     # model_dt ≈ 1 / controller_frequency 其实就是控制周期 可以比控制周期小 不建议更大
-      vx_std: 0.5          # 采样标准差控制搜索范围
-      vy_std: 0.5
+      vx_std: 0.45          # 采样标准差控制搜索范围
+      vy_std: 0.45
       wz_std: 0.1
       vx_max: 2.0
       vx_min: -2.0
       vy_max: 2.0
       wz_max: 0.1
-      ax_max: 15.0
+      ax_max: 15.0         # 太小会速度慢
       ax_min: -15.0
       ay_min: -15.0
       ay_max: 15.0
@@ -120,13 +175,13 @@ nav_executor:
       PathFollowCritic:  # 和GoalCritic是一对, 沿着路径取得进展, 负责往前走的意愿
         enabled: true
         cost_power: 1
-        cost_weight: 13.0
+        cost_weight: 11.0
         offset_from_furthest: 7
         threshold_to_consider: 1.5
       PathAlignCritic:   # 贴着全局路径
         enabled: true
         cost_power: 1
-        cost_weight: 17.0
+        cost_weight: 15.0
         max_path_occupancy_ratio: 0.07 # 当全局路径有较多部分被障碍物占据时, PathAlignCritic减少/停止发挥作用
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -141,6 +196,7 @@ nav_executor:
         collision_cost: 10000.0
         collision_margin_distance: 0.05  # 真实碰撞边界之外留一层严重惩罚区
         near_goal_distance: 0.5
+
 
 topology_planner:
   ros__parameters:
@@ -162,8 +218,3 @@ topology_planner:
         use_astar: false
         allow_unknown: true
         use_final_approach_orientation: true
-
-robot_state_publisher:
-  ros__parameters:
-    use_sim_time: True
-

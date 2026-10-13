@@ -1,9 +1,9 @@
-from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.actions import LoadComposableNodes
-from launch_ros.descriptions import ComposableNode
+
+
 def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
 
@@ -17,24 +17,5 @@ def generate_launch_description():
             # 'forward_distance':0.2
         }]
     )
-
-
-    # container = Node(
-    #     name='fake_container',
-    #     package='rclcpp_components',
-    #     executable='component_container',
-    #     output='screen'
-    # )
-
-    # start_fake_baselink = LoadComposableNodes(
-    #     target_container='nav2_container',
-    #     composable_node_descriptions=[
-    #         ComposableNode(
-    #             package='fake_baselink',
-    #             plugin='FakeBaselink',
-    #             name='fake_baselink_node',
-    #         ),
-    #     ]
-    # )
 
     return LaunchDescription([fake_vel_transform_node])

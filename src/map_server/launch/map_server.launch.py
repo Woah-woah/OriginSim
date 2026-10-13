@@ -1,4 +1,4 @@
-"""Publish /map and independent global/local uint8 costmaps."""
+"""Publish static map, measured dynamic obstacles and global/local costmaps."""
 
 import os
 
@@ -12,7 +12,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-
+    """Start the static/dynamic map nodes and costmap producers."""
     bringup_dir = get_package_share_directory('bringup')
 
     map_file = LaunchConfiguration('map')
@@ -34,7 +34,7 @@ def generate_launch_description():
 
     declare_params_file_cmd = DeclareLaunchArgument(
         'params_file',
-        default_value=os.path.join(bringup_dir, 'params', 'nav2_params.yaml'),
+        default_value=os.path.join(bringup_dir, 'params', 'params.yaml'),
         description='Full path to the map server and costmap parameters file')
 
     load_nodes = GroupAction(
@@ -45,6 +45,13 @@ def generate_launch_description():
                 name='map_server',
                 output='screen',
                 parameters=[params_file, clock_params, {'yaml_filename': map_file}]),
+            Node(
+                package='map_server',
+                executable='dynamic_map_node',
+                name='dynamic_map',
+                output='screen',
+                parameters=[params_file, clock_params],
+                remappings=remappings),
             Node(
                 package='map_server',
                 executable='costmap_server_node',

@@ -1,3 +1,44 @@
+dynamic_map:
+  ros__parameters:
+    use_sim_time: true
+    enabled: true
+    cloud_topic: /cloud_registered
+    static_pcd: "scans_map_zmax3.pcd"
+    static_pcd_frame: map  # PCD 本身的坐标系，必须与实际地图一致
+    tracking_frame: odom  # 累积和记忆使用固定、重力对齐的坐标系
+    robot_base_frame: base_link_fake
+    resolution: 0.05
+    update_frequency: 10.0
+    input_timeout: 0.5  # ROS 时间及接收墙钟任一超时，动态层失效
+    tf_wait_timeout: 0.15
+    processing_timeout: 0.25
+    max_cloud_points: 200000
+    max_accumulated_points: 500000
+    accumulate_frames: 4
+    accumulate_duration: 0.35
+    roi:
+      min_radius: 0.4
+      max_radius: 8.0
+      min_z: -0.45  # 相对机器人原点，沿 tracking_frame 的竖直轴
+      max_z: 0.8
+    voxel_size: 0.03
+    static_voxel_size: 0.05
+    static_distance_threshold: 0.2
+    sor:
+      neighbors: 12
+      stddev_multiplier: 2.0
+    min_density_per_m2: 400.0  # 单个 Voxel 点可成为候选，持续观测由置信度确认
+    component_connection_distance: 0.55  # m，只用于连通域分组
+    min_component_area: 0.0075  # m²，8 邻域连通域
+    memory:
+      hit_rate: 5.0
+      decay_rate: 0.7
+      on_threshold: 0.6
+      off_threshold: 0.25
+      obstacle_timeout: 1.0
+      maximum_evidence_dt: 0.2
+    debug_clouds: false
+
 # Standalone map producer defaults; startup uses bringup/params/nav2_params.yaml.
 map_server:
   ros__parameters:
@@ -7,6 +48,11 @@ map_server:
     map_topic: /map
 global_costmap:
   ros__parameters:
+    dynamic_obstacles:
+      enabled: true
+      topic: /dynamic_map/obstacles_raw
+      message_timeout: 0.5
+      observation_timeout: 0.6
     use_sim_time: true
     global_frame: map
     robot_base_frame: base_link_fake
@@ -30,6 +76,11 @@ global_costmap:
     costmap_timeout: 1.0
 local_costmap:
   ros__parameters:
+    dynamic_obstacles:
+      enabled: true
+      topic: /dynamic_map/obstacles_raw
+      message_timeout: 0.5
+      observation_timeout: 0.6
     use_sim_time: true
     global_frame: odom
     robot_base_frame: base_link_fake

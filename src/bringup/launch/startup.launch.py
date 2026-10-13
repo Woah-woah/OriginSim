@@ -1,15 +1,19 @@
-from launch import LaunchDescription
-from launch_ros.actions import Node
-from launch.actions import IncludeLaunchDescription,TimerAction
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from ament_index_python.packages import get_package_share_directory
-from launch_ros.actions import LoadComposableNodes,ComposableNodeContainer
-from launch_ros.descriptions import ComposableNode
+"""Start localization, maps, visualization and point cloud processing."""
+
 import os
 
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import ComposableNodeContainer
+from launch_ros.actions import Node
+
+
 def generate_launch_description():
+
     bringup_dir = get_package_share_directory('bringup')
-    params_file = os.path.join(bringup_dir, 'params', 'nav2_params.yaml')
+    params_file = os.path.join(bringup_dir, 'params', 'params.yaml')
 
     container = ComposableNodeContainer(
         name='container',
@@ -19,51 +23,38 @@ def generate_launch_description():
         output='screen',
         parameters=[params_file, {'autostart': True}],
     )
-    
-    tf = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('bringup')+"/launch/tf.launch.py"
-        )
-    )
 
     pointlio = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('point_lio_with_grid_map')+"/launch/point_lio.launch.py"
-        )
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('point_lio_with_grid_map'),
+            'launch', 'point_lio.launch.py'))
     )
 
-    start_nav2_rviz = Node(
-        package="rviz2",
-        executable="rviz2",
-        name="nav2_rviz",
+    start_rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
         arguments=[
-            "-d", os.path.join(bringup_dir, "rviz", "nav2_default_view.rviz"),
-            "--ros-args", "--log-level", "error",
+            '-d', os.path.join(bringup_dir, 'rviz', 'default_view.rviz'),
+            '--ros-args', '--log-level', 'error',
         ],
-        parameters=[{"use_sim_time": True}],
-        output="log",
+        parameters=[{'use_sim_time': True}],
+        output='log',
         remappings=[
-            ("/tf", "tf"),
-            ("/tf_static", "tf_static"),
+            ('/tf', 'tf'),
+            ('/tf_static', 'tf_static'),
         ],
     )
 
-    modify=IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('modify_map_to_odom')+"/launch/modify.launch.py"
-        )
+    modify = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('modify_map_to_odom'), 'launch', 'modify.launch.py'))
     )
-    
-    dec = Node(
-            package="dec_tree",
-            executable="root",
-            namespace='',
-            output="screen",
-        )
+
     seg = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('linefit_ground_segmentation_ros')+"/launch/segmentation.launch.py"
-        )
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('linefit_ground_segmentation_ros'),
+            'launch', 'segmentation.launch.py'))
     )
 
     load_map_server = IncludeLaunchDescription(
@@ -72,67 +63,21 @@ def generate_launch_description():
         launch_arguments={
             'map': os.path.join(bringup_dir, 'map', 'rmuc_2025_normalized.yaml'),
             'use_sim_time': 'true',
-            'map_params_file': params_file,
+            'params_file': params_file,
         }.items(),
     )
 
     fake_baselink = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('fake_baselink')+"/launch/fake_baselink.launch.py"
-        )
-    )
-    
-    p_to_l = LoadComposableNodes(
-        target_container='container',
-        composable_node_descriptions=[
-            ComposableNode(
-                package='pointcloud_to_laserscan',
-                plugin="pointcloud_to_laserscan::PointCloudToLaserScanNode",
-                name='pointcloud_to_laserscan_node',
-                parameters=[{
-                    'target_frame': 'base_link',
-                    'transform_tolerance': 0.1,
-                    'min_height': 0.2,
-                    'max_height': 1.0,
-                    'angle_min': -3.14159,  # -M_PI/2
-                    'angle_max': 3.14159,  # M_PI/2
-                    'angle_increment': 0.0043,  # M_PI/360.0
-                    'scan_time': 0.3333,
-                    'range_min': 0.4,
-                    'range_max': 15.0,
-                    'use_inf': True,
-                    'inf_epsilon': 1.0
-                }],
-                remappings=[('cloud_in',  ['/segmentation/obstacle']),
-                        ('scan',  ['/scan'])],
-            )
-        ]
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('fake_baselink'), 'launch', 'fake_baselink.launch.py'))
     )
 
-    gicp = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('small_gicp_localization')+"/launch/small_gicp_localization.launch.py"
-        )
-    )
-
-    region_behavior = Node(
-        package="region_behavior",
-        executable="region_behavior_node",
-        namespace='',
-        output="screen",
-    )
-
-    return LaunchDescription(
-        [
-            pointlio,
-            container,
-            modify,
-            # gicp,
-             start_nav2_rviz,
-             seg,
-             load_map_server,
-             p_to_l,
-             fake_baselink,
-            #  region_behavior
-        ]
-    )
+    return LaunchDescription([
+        pointlio,
+        container,
+        modify,
+        start_rviz,
+        # seg,
+        load_map_server,
+        fake_baselink,
+    ])
