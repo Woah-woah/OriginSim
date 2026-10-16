@@ -1,4 +1,4 @@
-world: "rmuc_2025"
+world: "rmuc_2027"
 
 robots:
 
@@ -64,3 +64,4 @@ robots:
 
   # Share the exact rmuc_2025 robot configuration, including spawn pose.
   rmuc_2026: *rmuc_2025_robots
+  rmuc_2027: *rmuc_2025_robots
