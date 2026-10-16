@@ -50,19 +50,19 @@
                 <xmacro_block name="geometry_box" x="0.50" y="0.50" z="0.025"/>
                 <material><ambient>0.3 0.35 0.4 1</ambient><diffuse>0.3 0.35 0.4 1</diffuse></material>
             </visual>
-            <visual name="projectile_container_visual">
+            <!-- <visual name="projectile_container_visual">
                 <pose>-0.122 0 0.177 0 0 0</pose>
                 <xmacro_block name="geometry_box" x="0.1" y="0.18" z="0.146"/>
                 <material><ambient>0.3 0.35 0.4 1</ambient><diffuse>0.3 0.35 0.4 1</diffuse></material>
-            </visual>
+            </visual> -->
             <collision name="base_link_base_collision">
                 <pose>0 0 0.12 0 0 0</pose>
                 <xmacro_block name="geometry_box" x="0.50" y="0.50" z="0.025"/>
             </collision>
-            <collision name="base_link_projectile_container_collision">
+            <!-- <collision name="base_link_projectile_container_collision">
                 <pose>-0.122 0 0.177 0 0 0</pose>
                 <xmacro_block name="geometry_box" x="0.1" y="0.18" z="0.146"/>
-            </collision>
+            </collision> -->
             <sensor name="base_link_imu" type="imu" >
                 <always_on>1</always_on>
                 <update_rate>200</update_rate>
@@ -78,7 +78,7 @@
         <!--rear_right wheel link and joint-->
         <xmacro_block name="swerve_wheel" prefix="rear_right" parent="chassis" pose="-0.25 -0.25 0 0 0 0" side="-1"/>
         <!--gimbal yaw module-->
-        <joint name="gimbal_yaw_joint" type="revolute">
+        <joint name="gimbal_yaw_joint" type="fixed">
             <pose relative_to="base_link">0 0 -0.6 0 0 0</pose>
             <parent>base_link</parent>
             <child>chassis</child>
@@ -98,17 +98,17 @@
                 <pose>0 0 0.06 0 0 0</pose>
                 <xmacro_block name="inertia_cylinder"  m="1.0" r="0.05" l="0.17"/>
             </inertial>
-            <visual name="visual">
+            <!-- <visual name="visual">
                 <pose>0 0 -0.4 0 0 0</pose>
                 <xmacro_block name="geometry_mesh" uri="model://rmua19_standard_robot/meshes/gimbal_yaw.dae"/>
-            </visual>
-            <collision name="collision">
+            </visual> -->
+            <!-- <collision name="collision">
                 <pose>0 0 1.0885 0 0 0</pose>
                 <xmacro_block name="geometry_box" x="0.065" y="0.117" z="0.177"/>
-            </collision>
+            </collision> -->
         </link>
         <!--gimbal pitch module-->
-        <joint name="gimbal_pitch_joint" type="revolute">
+        <!-- <joint name="gimbal_pitch_joint" type="revolute">
             <pose relative_to='base_link'>0 0.004 -0.266 0 0 0</pose>
             <parent>base_link</parent>
             <child>gimbal_pitch</child>
@@ -121,8 +121,8 @@
                     <velocity>50</velocity>
                 </limit>
             </axis>
-        </joint>
-        <link name="gimbal_pitch" >
+        </joint> -->
+        <!-- <link name="gimbal_pitch" >
             <pose relative_to="gimbal_pitch_joint">0 0 0 0 0 0</pose>
             <inertial>
                 <pose>0.02 0 0 0 0 0</pose>
@@ -143,23 +143,23 @@
                 <always_on>1</always_on>
                 <update_rate>200</update_rate>
             </sensor>
-        </link>
+        </link> -->
         <!--for referee system -->
-        <!--front armors -->
-        <xmacro_block name="small_armor_with_support" suffix="_0" parent="chassis"
-                sticker_type="${sticker_type}" pose="0.197 0 0.061 0 0 0"/>
-        <!--left armors -->
-        <xmacro_block name="small_armor_with_support" suffix="_1" parent="chassis"
-                sticker_type="${sticker_type}" pose="0 0.116 0.061 0 0 1.5708"/>
+        <!-- front armors -->
+        <!-- <xmacro_block name="small_armor_with_support" suffix="_0" parent="chassis"
+                sticker_type="${sticker_type}" pose="0.197 0 0.061 0 0 0"/> -->
+        <!-- left armors -->
+        <!-- <xmacro_block name="small_armor_with_support" suffix="_1" parent="chassis"
+                sticker_type="${sticker_type}" pose="0 0.116 0.061 0 0 1.5708"/> -->
         <!--rear armors -->
-        <xmacro_block name="small_armor_with_support" suffix="_2" parent="chassis"
-                sticker_type="${sticker_type}" pose="-0.197 0 0.061 0 0 3.14"/>
+        <!-- <xmacro_block name="small_armor_with_support" suffix="_2" parent="chassis"
+                sticker_type="${sticker_type}" pose="-0.197 0 0.061 0 0 3.14"/> -->
         <!--right armors -->
-        <xmacro_block name="small_armor_with_support" suffix="_3" parent="chassis"
-                sticker_type="${sticker_type}" pose="0 -0.116 0.061 0 0 -1.5708"/>
+        <!-- <xmacro_block name="small_armor_with_support" suffix="_3" parent="chassis"
+                sticker_type="${sticker_type}" pose="0 -0.116 0.061 0 0 -1.5708"/> -->
         <!--light_indicator-->
-        <xmacro_block name="light_indicator" suffix="" parent="chassis" pose="-0.207 0 0.1 0 0 0"/>
+        <!-- <xmacro_block name="light_indicator" suffix="" parent="chassis" pose="-0.207 0 0.1 0 0 0"/> -->
         <!--speed_monitor_17mm-->
-        <xmacro_block name="speed_monitor_17mm" suffix="" parent="gimbal_pitch" pose="0.07 0 0 0 0 0"/>
+        <!-- <xmacro_block name="speed_monitor_17mm" suffix="" parent="gimbal_pitch" pose="0.07 0 0 0 0 0"/> -->
     </xmacro_define_block>
 </sdf>
