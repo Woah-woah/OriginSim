@@ -11,7 +11,7 @@
 namespace nav_executor
 {
 enum class TaskState {IDLE, WAITING_FOR_MAP, PLANNING, PATH_READY, SUCCEEDED, FAILED};
-enum class ReplanReason {NONE, PATH_DEVIATION, EXECUTION_STALLED};
+enum class ReplanReason {NONE, PATH_DEVIATION, EXECUTION_STALLED, PATH_BLOCKED};
 
 struct PlanIdentity
 {
@@ -29,6 +29,7 @@ struct ReplanEvent
   double path_distance{0.0};
   double progress{0.0};
   double duration{0.0};
+  unsigned int blocked_checks{0};
 };
 
 struct PlanningRequest

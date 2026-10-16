@@ -24,6 +24,12 @@ nav_executor:
       minimum_progress: 0.1
       maximum_sample_gap: 0.25
       replan_cooldown: 2.0
+      path_blocked:
+        enabled: true
+        lookahead_distance: 5.0
+        safety_margin: 0.05
+        confirmations: 3
+        maximum_sample_gap: 1.0
     FollowPath:
       open_loop: false
 

@@ -27,6 +27,7 @@ public:
   std::shared_ptr<tf2_ros::Buffer> getTfBuffer() {return tf_;}
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose);
   bool isCurrent() const;
+  rclcpp::Time snapshotStamp() const;
 
 private:
   MapSettings settings_;

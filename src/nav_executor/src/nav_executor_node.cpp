@@ -8,6 +8,8 @@
 #include "nav_executor/path_planner.hpp"
 #include "nav_executor/path_executor.hpp"
 #include "nav_executor/route_monitor.hpp"
+#include "nav_executor/path_collision.hpp"
+#include "map_server/costmap_layers.hpp"
 #include "map_server/costmap_client.hpp"
 #include "rclcpp/parameter_map.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -128,7 +130,23 @@ public:
       declare_parameter("route_monitor.minimum_command_speed", 0.1);
     monitor_config.minimum_progress = declare_parameter("route_monitor.minimum_progress", 0.1);
     monitor_config.maximum_sample_gap = declare_parameter("route_monitor.maximum_sample_gap", 0.25);
+    monitor_config.path_blocked_enabled = declare_parameter("route_monitor.path_blocked.enabled", true);
+    monitor_config.blocked_lookahead_distance =
+      declare_parameter("route_monitor.path_blocked.lookahead_distance", 5.0);
+    monitor_config.blocked_safety_margin =
+      declare_parameter("route_monitor.path_blocked.safety_margin", 0.05);
+    monitor_config.blocked_confirmations =
+      declare_parameter("route_monitor.path_blocked.confirmations", 3);
+    monitor_config.blocked_maximum_sample_gap =
+      declare_parameter("route_monitor.path_blocked.maximum_sample_gap", 1.0);
     monitor_ = std::make_unique<RouteMonitor>(monitor_config);
+    path_clearance_ = costmap_->settings().robot_radius;
+    for (const auto & vertex : costmap_->getRobotFootprint()) {
+      path_clearance_ = std::max(path_clearance_, std::hypot(vertex.x, vertex.y));
+    }
+    path_clearance_ += monitor_config.blocked_safety_margin;
+    RCLCPP_INFO(get_logger(), "Path blocked monitor: lookahead=%.2fm confirmations=%d clearance=%.2fm",
+      monitor_config.blocked_lookahead_distance, monitor_config.blocked_confirmations, path_clearance_);
 
     // Separate node so the planner's existing mutable connector callbacks can be
     // serviced exclusively on the planning thread, between planning calls.
@@ -157,6 +175,12 @@ public:
         if (snapshot_.getSizeInCellsX() < 3 || snapshot_.getSizeInCellsY() < 3) {
           throw std::runtime_error("Global costmap has no usable map");
         }
+        // Reuse the existing inflation implementation on the worker's private snapshot.
+        // NavFn must have room for the same swept footprint used during validation.
+        map_server::InflationOptions clearance;
+        clearance.radius = path_clearance_ + 2.0 * snapshot_.getResolution();
+        clearance.inscribed_radius = clearance.radius;
+        map_server::inflate(snapshot_, clearance);
         const auto deadline = TaskManager::Clock::now() +
           std::chrono::duration<double>(planning_timeout_);
         auto timed_cancel = [cancelled, deadline]() {
@@ -180,43 +204,76 @@ public:
         }
       });
 
-    goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      "goal_pose", rclcpp::QoS(10), [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
-        if (executor_) {executor_->stop("Goal update");}
+
+    goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>("goal_pose", rclcpp::QoS(10),
+      [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+
+        geometry_msgs::msg::PoseStamped goal;
+
+        // 1. 先验证目标是否合法
         try {
-          auto goal = *msg;
-          if (goal.header.frame_id.empty()) {throw std::invalid_argument("Goal frame_id is empty");}
+          goal = *msg;
+
+          if (goal.header.frame_id.empty()) {
+            throw std::invalid_argument("Goal frame_id is empty");
+          }
+
           const auto & p = goal.pose.position;
           const auto & q = goal.pose.orientation;
-          const double norm = std::hypot(std::hypot(q.x, q.y), std::hypot(q.z, q.w));
-          if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
-            !std::isfinite(norm) || norm < 1e-6)
+
+          const double norm = std::hypot(
+            std::hypot(q.x, q.y),
+            std::hypot(q.z, q.w));
+
+          if (!std::isfinite(p.x) ||
+              !std::isfinite(p.y) ||
+              !std::isfinite(p.z) ||
+              !std::isfinite(norm) ||
+              norm < 1e-6)
           {
             throw std::invalid_argument("Goal has invalid position or quaternion");
           }
+
+          // 规范化四元数
           goal.pose.orientation.x /= norm;
           goal.pose.orientation.y /= norm;
           goal.pose.orientation.z /= norm;
           goal.pose.orientation.w /= norm;
+
+          // 转换到全局坐标系
           if (goal.header.frame_id != global_frame_) {
-            goal = costmap_->getTfBuffer()->transform(goal, global_frame_, tf2::durationFromSec(0.1));
+            goal = costmap_->getTfBuffer()->transform(
+              goal, global_frame_, tf2::durationFromSec(0.1));
           }
-          if (tasks_.setGoal(goal)) {
-            worker_->invalidate(tasks_.generation());
-            publishTask();
-          } else if (executor_ && tasks_.state() == TaskState::PATH_READY) {
-            executor_->acceptPath(tasks_.path(), tasks_.identity());
-          }
+
         } catch (const std::exception & exception) {
-          tasks_.cancel();
-          worker_->invalidate(tasks_.generation());
-          publishTask();
+
+          // 无效目标只报错，不取消正在执行的任务
           RCLCPP_WARN(get_logger(), "Rejected goal: %s", exception.what());
+
           std_msgs::msg::String error;
           error.data = exception.what();
           error_pub_->publish(error);
+
+          return;
         }
+
+        // 2. 判断目标是否真的发生变化
+        if (!tasks_.setGoal(goal)) {
+          // 重复目标：不停车、不重新设置路径
+          return;
+        }
+
+        // 3. 只有收到新目标，才停止原来的执行器
+        if (executor_) {
+          executor_->stop("New goal");
+        }
+
+        // 4. 使旧规划结果失效，开始新任务
+        worker_->invalidate(tasks_.generation());
+        publishTask();
       });
+
     cancel_srv_ = create_service<std_srvs::srv::Trigger>("nav_executor/cancel",
       [this](const std_srvs::srv::Trigger::Request::SharedPtr,
       std_srvs::srv::Trigger::Response::SharedPtr response) {
@@ -240,13 +297,29 @@ public:
       });
     tick_ = create_wall_timer(std::chrono::duration<double>(1.0 / tick_frequency), [this]() {
       const auto now = TaskManager::Clock::now();
+      checkPathBlocked(now);
       if (auto result = worker_->takeResult()) {
+        if (result->identity == tasks_.identity() && !result->path.poses.empty()) {
+          auto * grid = costmap_->getCostmap();
+          std::lock_guard<map_server::Costmap2D::mutex_t> lock(*grid->getMutex());
+          if (!costmap_->isCurrent() || result->path.header.frame_id != global_frame_ ||
+            !pathIsClear(result->path, *grid, path_clearance_))
+          {
+            result->path.poses.clear();
+            result->error = "Rejected plan: latest costmap is stale or path footprint is blocked";
+          }
+        }
         if (tasks_.accept(std::move(*result), now)) {
           if (tasks_.state() == TaskState::FAILED) {
             RCLCPP_WARN(get_logger(), "Planning failed: %s", tasks_.error().c_str());
           }
           if (executor_ && tasks_.state() == TaskState::PATH_READY) {
-            executor_->acceptPath(tasks_.path(), tasks_.identity());
+            if (executor_->acceptPath(tasks_.path(), tasks_.identity()) && tasks_.replanCount() > 0) {
+              RCLCPP_INFO(get_logger(), "Replan accepted: goal_id=%lu generation=%lu count=%lu; latest-map clearance verified",
+                static_cast<unsigned long>(tasks_.identity().goal_id),
+                static_cast<unsigned long>(tasks_.generation()),
+                static_cast<unsigned long>(tasks_.replanCount()));
+            }
           }
           publishTask();
         }
@@ -282,19 +355,7 @@ public:
         if (!tasks_.isPathConfirmed(identity)) {return;}
         const auto now = TaskManager::Clock::now();
         const auto event = monitor_->observe(tasks_.path(), identity, pose, command, now);
-        if (event && tasks_.routeInvalid(*event, now)) {
-          executor_->stop(TaskManager::reasonName(event->reason));
-          worker_->invalidate(tasks_.generation());
-          RCLCPP_WARN(get_logger(),
-            "Route replan: reason=%s goal_id=%lu old_generation=%lu new_generation=%lu "
-            "count=%lu distance=%.3f progress=%.3f duration=%.2f; stopped until confirmed plan",
-            TaskManager::reasonName(event->reason), static_cast<unsigned long>(identity.goal_id),
-            static_cast<unsigned long>(identity.plan_generation),
-            static_cast<unsigned long>(tasks_.generation()),
-            static_cast<unsigned long>(tasks_.replanCount()),
-            event->path_distance, event->progress, event->duration);
-          publishTask();
-        }
+        if (event) {handleReplanEvent(*event, now);}
       });
   }
 
@@ -308,6 +369,48 @@ public:
   }
 
 private:
+  void handleReplanEvent(const ReplanEvent & event, TaskManager::Clock::time_point now)
+  {
+    if (!tasks_.routeInvalid(event, now)) {return;}
+    executor_->stop(TaskManager::reasonName(event.reason));
+    worker_->invalidate(tasks_.generation());
+    RCLCPP_WARN(get_logger(),
+      "Route replan: reason=%s goal_id=%lu old_generation=%lu new_generation=%lu "
+      "count=%lu distance=%.3f progress=%.3f duration=%.2f blocked_checks=%u; "
+      "stopped until confirmed plan",
+      TaskManager::reasonName(event.reason), static_cast<unsigned long>(event.identity.goal_id),
+      static_cast<unsigned long>(event.identity.plan_generation),
+      static_cast<unsigned long>(tasks_.generation()),
+      static_cast<unsigned long>(tasks_.replanCount()),
+      event.path_distance, event.progress, event.duration, event.blocked_checks);
+    publishTask();
+  }
+
+  void checkPathBlocked(TaskManager::Clock::time_point now)
+  {
+    if (!executor_ || tasks_.state() != TaskState::PATH_READY ||
+      executor_->state() != ExecutionState::RUNNING)
+    {
+      monitor_->resetBlocked();
+      return;
+    }
+    geometry_msgs::msg::PoseStamped pose;
+    if (!costmap_->getRobotPose(pose)) {monitor_->resetBlocked(); return;}
+    std::optional<ReplanEvent> event;
+    {
+      auto * grid = costmap_->getCostmap();
+      std::lock_guard<map_server::Costmap2D::mutex_t> lock(*grid->getMutex());
+      if (!costmap_->isCurrent()) {monitor_->resetBlocked(); return;}
+      double radius = costmap_->settings().robot_radius;
+      for (const auto & vertex : costmap_->getRobotFootprint()) {
+        radius = std::max(radius, std::hypot(vertex.x, vertex.y));
+      }
+      event = monitor_->observeBlocked(tasks_.path(), tasks_.identity(), pose, *grid,
+        costmap_->snapshotStamp().nanoseconds(), radius, now);
+    }
+    if (event) {handleReplanEvent(*event, now);}
+  }
+
   void publishTask()
   {
     if (monitor_ && tasks_.state() != TaskState::PATH_READY) {monitor_->reset();}
@@ -350,6 +453,7 @@ private:
   TaskManager tasks_;
   std::string global_frame_;
   double planning_timeout_;
+  double path_clearance_{0.0};
   std::atomic<bool> ready_{false};
   map_server::Costmap2D snapshot_;
   rclcpp::Node::SharedPtr planner_node_;

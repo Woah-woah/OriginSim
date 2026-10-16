@@ -111,9 +111,9 @@ local_costmap:
 nav_executor:
   ros__parameters:
     use_sim_time: true
-    log_enbaled: true  # 是否输出终端 Task state 日志
+    log_enbaled: false  # 是否输出终端 Task state 日志
     tick_frequency: 20.0
-    goal_tolerance: 0.02
+    goal_tolerance: 0.05
     retry_delay: 1.0
     planning_timeout: 5.0
     controller_frequency: 20.0
@@ -134,6 +134,12 @@ nav_executor:
       minimum_progress: 0.1
       maximum_sample_gap: 0.25
       replan_cooldown: 2.0
+      path_blocked:
+        enabled: true
+        lookahead_distance: 5.0
+        safety_margin: 0.05
+        confirmations: 3
+        maximum_sample_gap: 1.0
     FollowPath:
       open_loop: false
       time_steps: 40       # prediction_time = time_steps × model_dt

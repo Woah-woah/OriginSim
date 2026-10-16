@@ -47,6 +47,12 @@ CostmapClient::CostmapClient(const std::string & name, const rclcpp::NodeOptions
     });
 }
 
+rclcpp::Time CostmapClient::snapshotStamp() const
+{
+  std::lock_guard<Costmap2D::mutex_t> lock(*grid_.getMutex());
+  return stamp_;
+}
+
 bool CostmapClient::isCurrent() const
 {
   std::lock_guard<Costmap2D::mutex_t> lock(*grid_.getMutex());

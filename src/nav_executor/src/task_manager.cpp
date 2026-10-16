@@ -147,7 +147,7 @@ bool TaskManager::routeInvalid(const ReplanEvent & event, Clock::time_point now)
 {
   if (!isPathConfirmed(event.identity) ||
     (event.reason != ReplanReason::PATH_DEVIATION &&
-    event.reason != ReplanReason::EXECUTION_STALLED))
+    event.reason != ReplanReason::EXECUTION_STALLED && event.reason != ReplanReason::PATH_BLOCKED))
   {
     return false;
   }
@@ -166,6 +166,7 @@ const char * TaskManager::reasonName(ReplanReason reason)
     case ReplanReason::NONE: return "NONE";
     case ReplanReason::PATH_DEVIATION: return "PATH_DEVIATION";
     case ReplanReason::EXECUTION_STALLED: return "EXECUTION_STALLED";
+    case ReplanReason::PATH_BLOCKED: return "PATH_BLOCKED";
   }
   return "UNKNOWN";
 }

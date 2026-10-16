@@ -11,7 +11,7 @@ foreach(dependency IN LISTS dependencies)
 endforeach()
 
 add_library(${PROJECT_NAME}_core src/task_manager.cpp src/path_planner.cpp src/path_executor.cpp
-  src/route_monitor.cpp)
+  src/route_monitor.cpp src/path_collision.cpp)
 target_compile_features(${PROJECT_NAME}_core PUBLIC cxx_std_17)
 target_include_directories(${PROJECT_NAME}_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
