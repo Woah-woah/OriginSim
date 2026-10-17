@@ -44,19 +44,15 @@ void ObstaclesCritic::initialize()
       " for full instructions. This will substantially impact run-time performance.");
   }
 
-  if (costmap_config_.footprint.empty() == consider_footprint_) {
-    RCLCPP_WARN(
-    logger_,
-    "Inconsistent configuration in collision checking. Please verify the robot's shape settings "
-    "in both the costmap and the obstacle critic.");
-    if (costmap_config_.footprint.empty()) {
-      throw mppi::ControllerException(
+  if (consider_footprint_ && costmap_config_.footprint.empty()) {
+    throw mppi::ControllerException(
       "Considering footprint in collision checking but no robot footprint provided in the "
       "costmap.");
-    }
   }
+  // A circular robot also has a generated polygon in the standalone costmap.
+  // A nonempty footprint does not conflict with explicitly selected circular checks.
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
     "ObstaclesCritic instantiated with %d power and %f / %f weights. "
     "Critic will collision check based on %s cost.",

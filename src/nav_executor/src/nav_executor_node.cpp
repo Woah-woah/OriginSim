@@ -145,7 +145,7 @@ public:
       path_clearance_ = std::max(path_clearance_, std::hypot(vertex.x, vertex.y));
     }
     path_clearance_ += monitor_config.blocked_safety_margin;
-    RCLCPP_INFO(get_logger(), "Path blocked monitor: lookahead=%.2fm confirmations=%d clearance=%.2fm",
+    RCLCPP_DEBUG(get_logger(), "Path blocked monitor: lookahead=%.2fm confirmations=%d clearance=%.2fm",
       monitor_config.blocked_lookahead_distance, monitor_config.blocked_confirmations, path_clearance_);
 
     // Separate node so the planner's existing mutable connector callbacks can be

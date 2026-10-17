@@ -34,7 +34,7 @@ void PathAlignCritic::initialize()
     "threshold_to_consider", 0.5f);
   getParam(use_path_orientations_, "use_path_orientations", false);
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
     "ReferenceTrajectoryCritic instantiated with %d power and %f weight",
     power_, weight_);

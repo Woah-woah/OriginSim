@@ -136,7 +136,7 @@ public:
         throw std::runtime_error("Failed to load controller '" + id + "' (" + type +
                 "): " + exception.what());
       }
-      RCLCPP_INFO(logger_, "Loaded controller %s (%s)", id.c_str(), type.c_str());
+      RCLCPP_DEBUG(logger_, "Loaded controller %s (%s)", id.c_str(), type.c_str());
     }
     controller_ = controllers_.at(selected);
     RCLCPP_INFO(logger_, "Selected controller: %s", selected.c_str());

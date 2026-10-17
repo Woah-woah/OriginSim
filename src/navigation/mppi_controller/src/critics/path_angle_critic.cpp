@@ -55,7 +55,7 @@ void PathAngleCritic::initialize()
       "don't allow for reversing! Setting mode to forward preference.");
   }
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
     "PathAngleCritic instantiated with %d power and %f weight. Mode set to: %s",
     power_, weight_, modeToStr(mode_).c_str());

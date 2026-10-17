@@ -28,7 +28,7 @@ void GoalCritic::initialize()
   getParam(weight_, "cost_weight", 5.0f);
   getParam(threshold_to_consider_, "threshold_to_consider", 1.4f);
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_, "GoalCritic instantiated with %d power and %f weight.",
     power_, weight_);
 }

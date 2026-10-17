@@ -124,7 +124,7 @@ void Optimizer::setOffset(double controller_frequency)
       logger_,
       "Controller period is less then model dt, consider setting it equal");
   } else if (abs(controller_period - settings_.model_dt) < eps) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
       "Controller period is equal to model dt. Control sequence "
       "shifting is ON");
@@ -158,7 +158,7 @@ void Optimizer::reset(bool reset_dynamic_speed_limits)
   noise_generator_.reset(settings_, isHolonomic());
   motion_model_->initialize(settings_.constraints, settings_.model_dt);
 
-  RCLCPP_INFO(logger_, "Optimizer reset");
+  RCLCPP_DEBUG(logger_, "Optimizer reset");
 }
 
 bool Optimizer::isHolonomic() const

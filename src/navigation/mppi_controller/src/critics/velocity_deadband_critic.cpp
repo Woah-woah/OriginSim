@@ -31,7 +31,7 @@ void VelocityDeadbandCritic::initialize()
     deadband_velocities.begin(), deadband_velocities.end(), deadband_velocities_.begin(),
     [](double d) {return static_cast<float>(d);});
 
-  RCLCPP_INFO_STREAM(
+  RCLCPP_DEBUG_STREAM(
     logger_, "VelocityDeadbandCritic instantiated with "
       << power_ << " power, " << weight_ << " weight, deadband_velocity ["
       << deadband_velocities_.at(0) << "," << deadband_velocities_.at(1) << ","

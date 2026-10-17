@@ -55,6 +55,20 @@ ParametersHandler::dynamicParamsCallback(
   rcl_interfaces::msg::SetParametersResult result;
   std::lock_guard<std::mutex> lock(parameters_change_mutex_);
 
+  // This callback sees every parameter on the host node, including declarations
+  // from other controller plugins. Only registered MPPI parameters belong here.
+  bool has_mppi_parameter = false;
+  for (const auto & param : parameters) {
+    if (get_param_callbacks_.find(param.get_name()) != get_param_callbacks_.end()) {
+      has_mppi_parameter = true;
+      break;
+    }
+  }
+  if (!has_mppi_parameter) {
+    result.successful = true;
+    return result;
+  }
+
   for (auto & pre_cb : pre_callbacks_) {
     pre_cb();
   }
@@ -66,8 +80,6 @@ ParametersHandler::dynamicParamsCallback(
       callback != get_param_callbacks_.end())
     {
       callback->second(param);
-    } else {
-      RCLCPP_WARN(logger_, "Parameter %s not found", param_name.c_str());
     }
   }
 

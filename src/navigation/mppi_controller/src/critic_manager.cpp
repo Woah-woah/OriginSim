@@ -57,7 +57,7 @@ void CriticManager::loadCritics()
     critics_.back()->on_configure(
       parent_, name_, name_ + "." + name, costmap_,
       parameters_handler_, costmap_config_);
-    RCLCPP_INFO(logger_, "Critic loaded : %s", fullname.c_str());
+    RCLCPP_DEBUG(logger_, "Critic loaded : %s", fullname.c_str());
   }
 }
 

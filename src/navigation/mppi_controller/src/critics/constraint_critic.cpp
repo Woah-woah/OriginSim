@@ -24,7 +24,7 @@ void ConstraintCritic::initialize()
 
   getParam(power_, "cost_power", 1);
   getParam(weight_, "cost_weight", 4.0f);
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_, "ConstraintCritic instantiated with %d power and %f weight.",
     power_, weight_);
 

@@ -70,7 +70,7 @@ void CostCritic::initialize()
     RCLCPP_WARN(logger_, "Near collision cost is set higher than INSCRIBED_INFLATED_OBSTACLE");
   }
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
     "InflationCostCritic instantiated with %d power and %f / %f weights. "
     "Critic will collision check based on %s cost.",

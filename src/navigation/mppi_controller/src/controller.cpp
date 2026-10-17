@@ -62,7 +62,7 @@ void MPPIController::initialize(
 
   parameters_handler_->start();
   configured_ = true;
-  RCLCPP_INFO(logger_, "Configured MPPI Controller: %s", name_.c_str());
+  RCLCPP_DEBUG(logger_, "Configured MPPI Controller: %s", name_.c_str());
 }
 
 void MPPIController::shutdown()
@@ -71,7 +71,7 @@ void MPPIController::shutdown()
   trajectory_visualizer_.on_cleanup();
   parameters_handler_.reset();
   configured_ = false;
-  RCLCPP_INFO(logger_, "Cleaned up MPPI Controller: %s", name_.c_str());
+  RCLCPP_DEBUG(logger_, "Cleaned up MPPI Controller: %s", name_.c_str());
 }
 
 void MPPIController::reset()

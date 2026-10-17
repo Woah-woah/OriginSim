@@ -27,7 +27,7 @@ void GoalAngleCritic::initialize()
   getParam(threshold_to_consider_, "threshold_to_consider", 0.5f);
   getParam(symmetric_yaw_tolerance_, "symmetric_yaw_tolerance", false);
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
     "GoalAngleCritic instantiated with %d power, %f weight, %f "
     "angular threshold and symmetric_yaw_tolerance %s",

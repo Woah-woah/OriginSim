@@ -1,0 +1,7 @@
+<library path="minco_controller">
+  <class name="minco_controller/MPCController"
+         type="minco_controller::MincoMpcController"
+         base_class_type="nav_executor::ControllerPlugin">
+    <description>BIT Eigen/qpOASES MPC with timed nav_msgs/Path references.</description>
+  </class>
+</library>

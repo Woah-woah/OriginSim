@@ -24,7 +24,7 @@ void TwirlingCritic::initialize()
   getParam(power_, "cost_power", 1);
   getParam(weight_, "cost_weight", 10.0f);
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_, "TwirlingCritic instantiated with %d power and %f weight.", power_, weight_);
 }
 
