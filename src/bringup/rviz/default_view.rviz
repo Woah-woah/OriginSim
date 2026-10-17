@@ -15,8 +15,8 @@ Panels:
         - /Map3/Topic1
         - /Path1
         - /PointCloud21
-        - /PointCloud21/Status1
         - /PointCloud21/Topic1
+        - /Path2
       Splitter Ratio: 0.5833333134651184
     Tree Height: 984
   - Class: rviz_common/Selection
@@ -68,22 +68,6 @@ Visualization Manager:
         All Enabled: false
         aft_mapped:
           Value: true
-        armor_0:
-          Value: false
-        armor_1:
-          Value: false
-        armor_2:
-          Value: false
-        armor_3:
-          Value: false
-        armor_support_frame_0:
-          Value: false
-        armor_support_frame_1:
-          Value: false
-        armor_support_frame_2:
-          Value: false
-        armor_support_frame_3:
-          Value: false
         base_footprint:
           Value: false
         base_link:
@@ -91,10 +75,6 @@ Visualization Manager:
         base_link_fake:
           Value: false
         chassis:
-          Value: false
-        front_industrial_camera:
-          Value: false
-        front_industrial_camera_optical_frame:
           Value: false
         front_left_mount:
           Value: false
@@ -107,10 +87,6 @@ Visualization Manager:
         front_right_steering:
           Value: false
         front_right_wheel:
-          Value: false
-        gimbal_pitch:
-          Value: false
-        light_indicator:
           Value: false
         livox_frame:
           Value: false
@@ -130,8 +106,6 @@ Visualization Manager:
           Value: false
         rear_right_wheel:
           Value: false
-        speed_monitor:
-          Value: false
       Marker Scale: 2
       Name: TF
       Show Arrows: true
@@ -143,18 +117,6 @@ Visualization Manager:
             aft_mapped:
               base_link:
                 chassis:
-                  armor_support_frame_0:
-                    armor_0:
-                      {}
-                  armor_support_frame_1:
-                    armor_1:
-                      {}
-                  armor_support_frame_2:
-                    armor_2:
-                      {}
-                  armor_support_frame_3:
-                    armor_3:
-                      {}
                   front_left_mount:
                     front_left_steering:
                       front_left_wheel:
@@ -163,8 +125,6 @@ Visualization Manager:
                     front_right_steering:
                       front_right_wheel:
                         {}
-                  light_indicator:
-                    {}
                   rear_left_mount:
                     rear_left_steering:
                       rear_left_wheel:
@@ -173,12 +133,6 @@ Visualization Manager:
                     rear_right_steering:
                       rear_right_wheel:
                         {}
-                gimbal_pitch:
-                  front_industrial_camera:
-                    front_industrial_camera_optical_frame:
-                      {}
-                  speed_monitor:
-                    {}
               livox_frame:
                 {}
             base_link_fake:
@@ -334,6 +288,34 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: false
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: Path
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /optimal_trajectory
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -385,9 +367,9 @@ Visualization Manager:
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 7.336015701293945
-        Y: -4.358619213104248
-        Z: 12.021474838256836
+        X: 5.689790725708008
+        Y: -5.300008296966553
+        Z: 12.019851684570312
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -396,7 +378,7 @@ Visualization Manager:
       Pitch: 1.5697963237762451
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 3.1363604068756104
+      Yaw: 3.1213600635528564
     Saved: ~
 Window Geometry:
   Displays:

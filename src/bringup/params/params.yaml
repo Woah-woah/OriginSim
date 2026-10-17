@@ -119,6 +119,8 @@ nav_executor:
     controller_frequency: 20.0
     odom_topic: "/odom"
     cmd_vel_topic: "/cmd_vel"
+    controller_plugins: ["MPPI"]
+    selected_controller: "MPPI"
     odom_timeout: 0.5
     tf_timeout: 0.5
     control_timeout: 0.2
@@ -140,7 +142,8 @@ nav_executor:
         safety_margin: 0.05
         confirmations: 3
         maximum_sample_gap: 1.0
-    FollowPath:
+    MPPI:
+      plugin: "mppi_controller/MPPIController"
       open_loop: false
       time_steps: 40       # prediction_time = time_steps × model_dt
       model_dt: 0.05       # prediction_distance ≈ prediction_time × max_speed 全向底盘应该考虑合速度

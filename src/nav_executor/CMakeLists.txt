@@ -5,7 +5,7 @@ find_package(ament_cmake REQUIRED)
 find_package(Threads REQUIRED)
 find_package(yaml-cpp REQUIRED)
 set(dependencies rclcpp map_server topology_global_planner
-  geometry_msgs nav_msgs std_msgs std_srvs tf2 tf2_geometry_msgs pluginlib mppi_controller)
+  geometry_msgs nav_msgs std_msgs std_srvs tf2 tf2_geometry_msgs pluginlib)
 foreach(dependency IN LISTS dependencies)
   find_package(${dependency} REQUIRED)
 endforeach()
@@ -18,7 +18,6 @@ target_include_directories(${PROJECT_NAME}_core PUBLIC
   $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(${PROJECT_NAME}_core ${dependencies})
 target_link_libraries(${PROJECT_NAME}_core Threads::Threads)
-target_link_libraries(${PROJECT_NAME}_core mppi_controller::mppi_controller)
 
 add_executable(nav_executor_node src/nav_executor_node.cpp)
 target_link_libraries(nav_executor_node ${PROJECT_NAME}_core)
@@ -33,5 +32,10 @@ install(TARGETS ${PROJECT_NAME}_core nav_executor_node
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+
+# Export the header-only controller contract, without linking plugin providers
+# against the executor core or its planner implementation.
+ament_export_include_directories(include)
+ament_export_dependencies(rclcpp geometry_msgs nav_msgs map_server)
 
 ament_package()

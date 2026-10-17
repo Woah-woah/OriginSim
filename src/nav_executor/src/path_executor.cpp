@@ -4,8 +4,12 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
-#include "mppi_controller/controller.hpp"
+#include "nav_executor/controller_plugin.hpp"
+#include "pluginlib/class_loader.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "tf2/LinearMath/Transform.h"
 #include "tf2/utils.h"
@@ -66,23 +70,6 @@ const char * stateName(ExecutionState state)
   return "UNKNOWN";
 }
 
-class GoalTolerances : public mppi::GoalChecker
-{
-public:
-  double xy{0.3};
-  double yaw{3.14};
-  double stopped_speed{0.05};
-  bool getTolerances(
-    geometry_msgs::msg::Pose & pose, geometry_msgs::msg::Twist & velocity) override
-  {
-    pose.position.x = pose.position.y = xy;
-    tf2::Quaternion rotation;
-    rotation.setRPY(0.0, 0.0, yaw);
-    pose.orientation = tf2::toMsg(rotation);
-    velocity.linear.x = velocity.linear.y = velocity.angular.z = stopped_speed;
-    return true;
-  }
-};
 }  // namespace
 
 class PathExecutor::Impl
@@ -122,22 +109,37 @@ public:
     error_pub_ = node->create_publisher<std_msgs::msg::String>("nav_executor/execution_error", state_qos);
     publishZero();
 
-    mppi::CostmapConfig config;
-    config.global_frame = costmap_->getGlobalFrameID();
-    config.robot_base_frame = costmap_->getBaseFrameID();
-    config.footprint = costmap_->getRobotFootprint();
-    config.robot_radius = costmap_->settings().robot_radius;
-    config.track_unknown = costmap_->settings().track_unknown;
-    config.inflation_radius = costmap_->settings().inflation_radius;
-    config.inflation_cost_scaling_factor = costmap_->settings().cost_scaling_factor;
-    // Reject open-loop operation: MPPI must use measured robot speed.
-    if (!node->has_parameter("FollowPath.open_loop")) {
-      node->declare_parameter("FollowPath.open_loop", false);
+    rcl_interfaces::msg::ParameterDescriptor startup_only;
+    startup_only.read_only = true;
+    const auto plugins = node->declare_parameter<std::vector<std::string>>(
+      "controller_plugins", {"MPPI"}, startup_only);
+    const auto selected = node->declare_parameter(
+      "selected_controller", std::string("MPPI"), startup_only);
+    std::unordered_set<std::string> ids;
+    for (const auto & id : plugins) {
+      if (id.empty() || !ids.insert(id).second) {
+        throw std::invalid_argument("controller_plugins contains an empty or duplicate ID: " + id);
+      }
     }
-    if (node->get_parameter("FollowPath.open_loop").as_bool()) {
-      throw std::invalid_argument("FollowPath.open_loop must be false for measured odometry feedback");
+    if (ids.count(selected) == 0) {
+      throw std::invalid_argument("selected_controller is not in controller_plugins: " + selected);
     }
-    controller_.initialize(node, "FollowPath", costmap_->getTfBuffer(), costmap_->getCostmap(), config);
+    for (const auto & id : plugins) {
+      const auto type = node->declare_parameter(
+        id + ".plugin", std::string{}, startup_only);
+      if (type.empty()) {throw std::invalid_argument("Missing controller type: " + id + ".plugin");}
+      try {
+        auto controller = controller_loader_.createSharedInstance(type);
+        controller->initialize(node, id, costmap_);
+        controllers_.emplace(id, std::move(controller));
+      } catch (const std::exception & exception) {
+        throw std::runtime_error("Failed to load controller '" + id + "' (" + type +
+                "): " + exception.what());
+      }
+      RCLCPP_INFO(logger_, "Loaded controller %s (%s)", id.c_str(), type.c_str());
+    }
+    controller_ = controllers_.at(selected);
+    RCLCPP_INFO(logger_, "Selected controller: %s", selected.c_str());
     odom_sub_ = node->create_subscription<nav_msgs::msg::Odometry>(
       odom_topic, rclcpp::SensorDataQoS().keep_last(1),
       [this](nav_msgs::msg::Odometry::ConstSharedPtr msg) {
@@ -181,7 +183,7 @@ public:
   {
     path_.reset();
     publishZero();  // Stop first, before potentially expensive optimizer reset.
-    controller_.reset();
+    controller_->reset();
     setState(ExecutionState::STOPPED, reason);
   }
 
@@ -191,7 +193,7 @@ public:
     path_.reset();
     publishZero();
     if (had_path) {
-      controller_.reset();
+      controller_->reset();
       setState(ExecutionState::FAILED, reason);
       RCLCPP_WARN(logger_, "Path execution stopped: %s", reason.c_str());
       failure_(identity_, reason);
@@ -220,7 +222,7 @@ public:
           throw std::invalid_argument("Invalid pose or inconsistent frame in execution path");
         }
       }
-      controller_.setPlan(path);
+      controller_->setPlan(path);
       path_ = path;
       setState(ExecutionState::RUNNING, "");
       return true;
@@ -292,7 +294,7 @@ public:
           std::abs(speed.angular.z) <= tolerances_.stopped_speed)
         {
           path_.reset();
-          controller_.reset();
+          controller_->reset();
           setState(ExecutionState::SUCCEEDED, "");
           success_(identity_);
         }
@@ -309,18 +311,18 @@ public:
         }
       }
       const auto began = TaskManager::Clock::now();
-      const auto command = controller_.computeVelocityCommands(pose, speed, &tolerances_);
+      const auto command = controller_->computeVelocityCommands(pose, speed, tolerances_);
       if (std::chrono::duration<double>(TaskManager::Clock::now() - began).count() >
         control_timeout_ || !finiteTwist(command.twist))
       {
-        throw std::runtime_error("MPPI command invalid or computation deadline exceeded");
+        throw std::runtime_error("Controller command invalid or computation deadline exceeded");
       }
       // Inputs can expire during a long computation. Recheck before publishing.
       checkStamp(pose.header.stamp, tf_timeout_, "Robot TF", true);
       checkStamp(path_tf.header.stamp, tf_timeout_, "Path TF", true);
       readSpeed();
       if (!global_ready_() || !costmap_->isCurrent()) {
-        throw std::runtime_error("Costmap invalidated during MPPI computation");
+        throw std::runtime_error("Costmap invalidated during controller computation");
       }
       // Report validated controller feedback in the confirmed global path frame.
       // The monitor callback can synchronously revoke this path through TaskManager.
@@ -351,7 +353,11 @@ public:
   rclcpp::Clock::SharedPtr clock_;
   double frequency_, odom_timeout_, tf_timeout_, control_timeout_;
   GoalTolerances tolerances_;
-  mppi_controller::MPPIController controller_;
+  // Declaration order keeps libraries loaded until all plugin instances are destroyed.
+  pluginlib::ClassLoader<ControllerPlugin> controller_loader_{
+    "nav_executor", "nav_executor::ControllerPlugin"};
+  std::unordered_map<std::string, std::shared_ptr<ControllerPlugin>> controllers_;
+  std::shared_ptr<ControllerPlugin> controller_;
   std::optional<nav_msgs::msg::Path> path_;
   std::optional<nav_msgs::msg::Odometry> odom_;
   TaskManager::Clock::time_point odom_received_{};

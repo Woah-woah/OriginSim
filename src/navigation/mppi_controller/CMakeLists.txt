@@ -14,6 +14,7 @@ set(XTENSOR_USE_XSIMD 1)
 find_package(ament_cmake REQUIRED)
 find_package(xsimd REQUIRED)
 find_package(xtensor REQUIRED)
+find_package(nav_executor REQUIRED)
 
 include_directories(
   include
@@ -107,6 +108,13 @@ foreach(lib IN LISTS libraries)
   ament_target_dependencies(${lib} ${dependencies_pkgs})
 endforeach()
 
+# Only the adapter depends on the executor's header-only controller contract.
+add_library(mppi_controller_plugin SHARED src/controller_plugin.cpp)
+target_link_libraries(mppi_controller_plugin mppi_controller)
+ament_target_dependencies(mppi_controller_plugin nav_executor pluginlib)
+install(TARGETS mppi_controller_plugin LIBRARY DESTINATION lib)
+pluginlib_export_plugin_description_file(nav_executor controller_plugins.xml)
+
 install(TARGETS mppi_controller mppi_critics
   EXPORT mppi_controller_targets
   ARCHIVE DESTINATION lib
@@ -120,7 +128,7 @@ install(DIRECTORY include/
 
 ament_export_targets(mppi_controller_targets HAS_LIBRARY_TARGET)
 ament_export_libraries(${libraries})
-ament_export_dependencies(${dependencies_pkgs} xtensor xsimd)
+ament_export_dependencies(${dependencies_pkgs} xtensor xsimd nav_executor)
 ament_export_include_directories(include)
 pluginlib_export_plugin_description_file(mppi_controller critics.xml)
 

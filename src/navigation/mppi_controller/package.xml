@@ -11,6 +11,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_ros</buildtool_depend>
 
+  <depend>nav_executor</depend>
   <depend>rclcpp</depend>
   <depend>nav_msgs</depend>
   <depend>angles</depend>
@@ -28,8 +29,11 @@
   <depend>benchmark</depend>
   <depend>xsimd</depend>
 
+  <test_depend>ament_cmake_gtest</test_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
+    <nav_executor plugin="${prefix}/controller_plugins.xml" />
     <mppi_controller plugin="${prefix}/critics.xml" />
   </export>
 

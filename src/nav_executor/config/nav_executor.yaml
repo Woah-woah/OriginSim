@@ -30,7 +30,10 @@ nav_executor:
         safety_margin: 0.05
         confirmations: 3
         maximum_sample_gap: 1.0
-    FollowPath:
+    controller_plugins: ["MPPI"]
+    selected_controller: "MPPI"
+    MPPI:
+      plugin: "mppi_controller/MPPIController"
       open_loop: false
 
 topology_planner:

@@ -1,0 +1,7 @@
+<library path="mppi_controller_plugin">
+  <class name="mppi_controller/MPPIController"
+         type="mppi_controller::MppiControllerPlugin"
+         base_class_type="nav_executor::ControllerPlugin">
+    <description>MPPI controller adapter for nav_executor.</description>
+  </class>
+</library>

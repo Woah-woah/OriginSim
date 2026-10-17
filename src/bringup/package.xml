@@ -12,6 +12,7 @@
   <exec_depend>map_server</exec_depend>
   <exec_depend>point_lio_with_grid_map</exec_depend>
   <exec_depend>nav_executor</exec_depend>
+  <exec_depend>mppi_controller</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
