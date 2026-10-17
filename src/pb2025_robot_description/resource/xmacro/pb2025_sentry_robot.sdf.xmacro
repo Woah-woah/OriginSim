@@ -54,7 +54,7 @@
             <wheel_radius>0.0758</wheel_radius>
             <wheelbase>0.50</wheelbase>
             <track_width>0.50</track_width>
-            <wheel_acceleration>15.0</wheel_acceleration>
+            <wheel_acceleration>80.0</wheel_acceleration>
             <steering_gain>6.0</steering_gain>
             <steering_velocity>3.0</steering_velocity>
             <steering_acceleration>10.0</steering_acceleration>
