@@ -118,7 +118,7 @@ install(
 )
 
 # Export dependencies
-install(FILES PCD/scans_map_zmax3.pcd DESTINATION share/${PROJECT_NAME}/PCD)
+install(FILES PCD/scans_map_zmax3.pcd PCD/rmuc2026.pcd DESTINATION share/${PROJECT_NAME}/PCD)
 
 ament_export_dependencies(
   rclcpp

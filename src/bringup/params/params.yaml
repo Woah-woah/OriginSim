@@ -8,7 +8,7 @@ dynamic_map:
     use_sim_time: true
     enabled: true
     cloud_topic: /cloud_registered
-    static_pcd: "scans_map_zmax3.pcd"
+    static_pcd: "rmuc2026.pcd"
     static_pcd_frame: map          # PCD 本身的坐标系，必须与实际地图一致
     tracking_frame: odom           # 累积和记忆使用固定、重力对齐的坐标系
     robot_base_frame: base_link_fake
@@ -24,7 +24,7 @@ dynamic_map:
     roi:
       min_radius: 0.4
       max_radius: 8.0
-      min_z: -0.45                 # 相对机器人原点，沿 tracking_frame 的竖直轴
+      min_z: 0.0                 # 相对机器人原点，沿 tracking_frame 的竖直轴
       max_z: 0.8
     voxel_size: 0.03
     static_voxel_size: 0.05
