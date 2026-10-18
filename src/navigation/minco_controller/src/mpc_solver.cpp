@@ -154,8 +154,8 @@ bool MpcSolver::buildCondensedQP(const State & curr,
     const double qa = config_.q_along;
     const double qc = config_.q_cross;
     Q_bar(i * nx + 0, i * nx + 0) = qa * c * c + qc * s * s;
-    Q_bar(i * nx + 0, i * nx + 1) = (qc - qa) * c * s;
-    Q_bar(i * nx + 1, i * nx + 0) = (qc - qa) * c * s;
+    Q_bar(i * nx + 0, i * nx + 1) = (qa - qc) * c * s;
+    Q_bar(i * nx + 1, i * nx + 0) = (qa - qc) * c * s;
     Q_bar(i * nx + 1, i * nx + 1) = qa * s * s + qc * c * c;
     Q_bar(i * nx + 2, i * nx + 2) = config_.Q.z();  // yaw weight unchanged
 

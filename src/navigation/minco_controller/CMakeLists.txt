@@ -36,7 +36,7 @@ install(TARGETS minco_mpc_solver minco_controller EXPORT minco_controller_target
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/minco_controller DESTINATION include)
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
-install(FILES README.md UPSTREAM.md LICENSE DESTINATION share/${PROJECT_NAME})
+install(FILES LICENSE DESTINATION share/${PROJECT_NAME})
 install(FILES third_party/qpOASES/LICENSE third_party/qpOASES/LICENSE.txt
   DESTINATION share/${PROJECT_NAME}/third_party/qpOASES)
 

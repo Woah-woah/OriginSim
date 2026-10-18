@@ -111,12 +111,12 @@ local_costmap:
 nav_executor:
   ros__parameters:
     use_sim_time: true
-    log_enbaled: false  # 是否输出终端 Task state 日志
-    tick_frequency: 20.0
+    log_enbaled: false    # 是否输出终端 Task state 日志
+    tick_frequency: 20.0  # TaskManager 检查规划结果、任务状态和路径阻塞的频率
     goal_tolerance: 0.05
     retry_delay: 1.0
     planning_timeout: 5.0
-    controller_frequency: 20.0
+    controller_frequency: 50.0
     odom_topic: "/odom"
     cmd_vel_topic: "/cmd_vel"
     controller_plugins: ["MPPI", "MPC"]
@@ -145,8 +145,8 @@ nav_executor:
     MPPI:
       plugin: "mppi_controller/MPPIController"
       open_loop: false
-      time_steps: 40       # prediction_time = time_steps × model_dt
-      model_dt: 0.05       # prediction_distance ≈ prediction_time × max_speed 全向底盘应该考虑合速度
+      time_steps: 100       # prediction_time = time_steps × model_dt
+      model_dt: 0.02       # prediction_distance ≈ prediction_time × max_speed 全向底盘应该考虑合速度
       batch_size: 1000     # model_dt ≈ 1 / controller_frequency 其实就是控制周期 可以比控制周期小 不建议更大
       vx_std: 0.45          # 采样标准差控制搜索范围
       vy_std: 0.45
@@ -208,28 +208,28 @@ nav_executor:
 
     MPC:
       plugin: minco_controller/MPCController
-      dt: 0.05
-      horizon: 10
+      dt: 0.02
+      horizon: 25
       Q: [5.0, 5.0, 2.0]
       R: [1.0, 1.0, 0.5]
       q_along: 3.0
       q_cross: 12.0
-      vx_min: -2.0
-      vx_max: 2.0
-      vy_min: -2.0
-      vy_max: 2.0
+      vx_min: -1.7
+      vx_max: 1.7
+      vy_min: -1.7
+      vy_max: 1.7
       omega_min: -2.0
       omega_max: 2.0
       use_acc_constraints: false
-      ax_min: -2.0
-      ax_max: 2.0
-      ay_min: -2.0
-      ay_max: 2.0
+      ax_min: -1.5
+      ax_max: 1.5
+      ay_min: -1.5
+      ay_max: 1.5
       alpha_min: -4.0
       alpha_max: 4.0
       max_working_set_recalculations: 200
       eps_regularization: 1.0e-09
-      reference_speed: 1.5
+      reference_speed: 1.2
       reference_acceleration: 1.0
       reference_yaw_rate: 1.0
       control_delay_compensation: 0.25
@@ -245,7 +245,7 @@ topology_planner:
   ros__parameters:
     use_sim_time: true
     TopoPlanner:
-      topology_yaml: "topo.yaml"  
+      topology_yaml: "topo25.yaml"  
       use_topology: false
       fallback_to_inner_planner: false
       allow_nearest_region_fallback: false
