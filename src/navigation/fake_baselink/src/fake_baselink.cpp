@@ -47,7 +47,7 @@ public:
         );
 
         pub_fake_timer = this->create_wall_timer(
-            std::chrono::milliseconds(50),std::bind(&FakeBaselink::pub_fake_callback,this)
+            std::chrono::milliseconds(10),std::bind(&FakeBaselink::pub_fake_callback,this)
         );
 
         init_base_link_fake();
@@ -69,7 +69,7 @@ public:
         fake_q = odom_to_base_link.transform.rotation;
         base_link_translation = odom_to_base_link.transform.translation;
 
-        fake_trans.header.stamp = this->get_clock()->now();
+        fake_trans.header.stamp = odom_to_base_link.header.stamp;
         fake_trans.header.frame_id = odom_frame_id;
         fake_trans.child_frame_id = base_link_fake_frame_id;
 
@@ -118,7 +118,7 @@ public:
         }
         catch(...){}
 
-        fake_trans.header.stamp = this->get_clock()->now();
+        fake_trans.header.stamp = odom_to_base_link.header.stamp;
         fake_trans.header.frame_id = odom_frame_id;
         fake_trans.child_frame_id = base_link_fake_frame_id;
 
