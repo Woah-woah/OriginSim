@@ -45,7 +45,8 @@ bool TaskManager::replan()
   ++identity_.plan_generation;
   state_ = TaskState::WAITING_FOR_MAP;
   retry_at_ = Clock::time_point{};
-  path_ = nav_msgs::msg::Path{};
+  plan_ = {};
+  segment_index_ = 0;
   error_.clear();
   route_replan_pending_ = false;
   return true;
@@ -55,7 +56,8 @@ void TaskManager::cancel()
 {
   ++identity_.plan_generation;
   goal_.reset();
-  path_ = nav_msgs::msg::Path{};
+  plan_ = {};
+  segment_index_ = 0;
   error_.clear();
   state_ = TaskState::IDLE;
   retry_at_ = next_route_plan_at_ = Clock::time_point{};
@@ -83,7 +85,7 @@ std::optional<PlanningRequest> TaskManager::nextRequest(bool map_ready, Clock::t
   }
   ++identity_.plan_generation;
   state_ = TaskState::PLANNING;
-  return PlanningRequest{identity_, *goal_};
+  return PlanningRequest{identity_, *goal_, active_connector_};
 }
 
 bool TaskManager::accept(PlanningResult result, Clock::time_point now)
@@ -91,13 +93,56 @@ bool TaskManager::accept(PlanningResult result, Clock::time_point now)
   if (!goal_ || result.identity != identity_ || state_ != TaskState::PLANNING) {
     return false;
   }
-  if (!result.error.empty() || result.path.poses.empty()) {
+  if (result.error.empty()) {
+    const auto & segments = result.plan.segments;
+    for (size_t i = 0; i < segments.size(); ++i) {
+      const auto & segment = segments[i];
+      if (segment.path.poses.empty() || segment.path.header.frame_id.empty() ||
+        segment.path.header.frame_id != result.plan.full_path.header.frame_id)
+      {
+        result.error = "Invalid segment path or frame";
+        break;
+      }
+      if (i > 0 && segments[i - 1].path.poses.back().pose != segment.path.poses.front().pose) {
+        result.error = "Discontinuous segment boundary";
+        break;
+      }
+      if (segment.type == topology_global_planner::SegmentType::CONNECTOR &&
+        (segment.connector_id.empty() || segment.from_region.empty() || segment.to_region.empty() ||
+        segment.path.poses.back().pose != segment.exit_pose.pose))
+      {
+        result.error = "Invalid connector metadata or exit";
+        break;
+      }
+    }
+    if (active_connector_ && (segments.empty() ||
+      segments.front().type != topology_global_planner::SegmentType::CONNECTOR ||
+      segments.front().connector_id != active_connector_->connector_id ||
+      segments.front().from_region != active_connector_->from_region ||
+      segments.front().to_region != active_connector_->to_region))
+    {
+      result.error = "Plan lost committed connector";
+    }
+  }
+  if (result.error.empty()) {
+    std::vector<geometry_msgs::msg::PoseStamped> assembled;
+    for (const auto & segment : result.plan.segments) {
+      assembled.insert(assembled.end(), segment.path.poses.begin(), segment.path.poses.end());
+    }
+    if (assembled != result.plan.full_path.poses) {
+      result.error = "Full path differs from executable segments";
+    }
+  }
+  if (!result.error.empty() || result.plan.full_path.poses.empty() ||
+    result.plan.segments.empty()) {
     error_ = result.error.empty() ? "TopologyPlanner returned an empty path" : result.error;
-    path_ = nav_msgs::msg::Path{};
+    plan_ = {};
+    segment_index_ = 0;
     retry_at_ = now + retry_delay_;
     state_ = TaskState::FAILED;
   } else {
-    path_ = std::move(result.path);
+    plan_ = std::move(result.plan);
+    segment_index_ = 0;
     error_.clear();
     state_ = TaskState::PATH_READY;
   }
@@ -117,35 +162,68 @@ const char * TaskManager::stateName(TaskState state)
   return "UNKNOWN";
 }
 
-bool TaskManager::executionFailed(PlanIdentity identity, const std::string & error,
+bool TaskManager::executionFailed(SegmentIdentity identity, const std::string & error,
   Clock::time_point now)
 {
-  if (!isPathConfirmed(identity)) {return false;}
+  if (!isSegmentConfirmed(identity)) {return false;}
   ++identity_.plan_generation;
-  path_ = nav_msgs::msg::Path{};
+  plan_ = {};
+  segment_index_ = 0;
   error_ = error;
   retry_at_ = now + retry_delay_;
   state_ = TaskState::FAILED;
   return true;
 }
 
-bool TaskManager::executionSucceeded(PlanIdentity identity)
+bool TaskManager::segmentSucceeded(SegmentIdentity identity)
 {
-  if (!isPathConfirmed(identity)) {return false;}
-  state_ = TaskState::SUCCEEDED;
+  if (!isSegmentConfirmed(identity)) {return false;}
+  if (currentSegment()->type == topology_global_planner::SegmentType::CONNECTOR) {
+    active_connector_.reset();
+  }
+  ++segment_index_;
+  if (segment_index_ == plan_.segments.size()) {state_ = TaskState::SUCCEEDED;}
   error_.clear();
   return true;
 }
 
-bool TaskManager::isPathConfirmed(PlanIdentity identity) const
+const topology_global_planner::Segment * TaskManager::currentSegment() const
 {
-  return goal_.has_value() && state_ == TaskState::PATH_READY &&
-         identity == identity_ && !path_.poses.empty();
+  if (state_ != TaskState::PATH_READY || segment_index_ >= plan_.segments.size()) {return nullptr;}
+  return &plan_.segments[segment_index_];
+}
+
+bool TaskManager::beginSegment(SegmentIdentity identity)
+{
+  if (!isSegmentConfirmed(identity)) {return false;}
+  if (currentSegment()->type == topology_global_planner::SegmentType::CONNECTOR) {
+    active_connector_ = *currentSegment();
+  }
+  return true;
+}
+
+bool TaskManager::commitConnector(const topology_global_planner::Segment & connector,
+  SegmentIdentity owner)
+{
+  if (!isSegmentConfirmed(owner) || connector.type != topology_global_planner::SegmentType::CONNECTOR) {
+    return false;
+  }
+  if (active_connector_ && (active_connector_->connector_id != connector.connector_id ||
+    active_connector_->from_region != connector.from_region || active_connector_->to_region != connector.to_region))
+  {return false;}
+  active_connector_ = connector;
+  return true;
+}
+
+bool TaskManager::isSegmentConfirmed(SegmentIdentity identity) const
+{
+  return goal_.has_value() && currentSegment() && identity == segmentIdentity() &&
+         !currentSegment()->path.poses.empty();
 }
 
 bool TaskManager::routeInvalid(const ReplanEvent & event, Clock::time_point now)
 {
-  if (!isPathConfirmed(event.identity) ||
+  if (!isSegmentConfirmed(event.identity) ||
     (event.reason != ReplanReason::PATH_DEVIATION &&
     event.reason != ReplanReason::EXECUTION_STALLED && event.reason != ReplanReason::PATH_BLOCKED))
   {

@@ -1,17 +1,13 @@
 #include "nav_executor/path_executor.hpp"
 
 #include <cmath>
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <utility>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
 
-#include "nav_executor/controller_plugin.hpp"
-#include "pluginlib/class_loader.hpp"
-#include "std_msgs/msg/string.hpp"
+#include "minco_controller/minco_mpc_controller.hpp"
 #include "tf2/LinearMath/Transform.h"
 #include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -50,6 +46,13 @@ geometry_msgs::msg::Twist transformRobotVelocity(
 
 namespace
 {
+struct GoalTolerances
+{
+  double xy{0.3};
+  double yaw{3.14};
+  double stopped_speed{0.05};
+};
+
 bool finitePose(const geometry_msgs::msg::Pose & pose)
 {
   const auto & p = pose.position;
@@ -57,18 +60,6 @@ bool finitePose(const geometry_msgs::msg::Pose & pose)
   const double norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
   return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
          std::isfinite(norm) && std::abs(norm - 1.0) < 0.01;
-}
-
-const char * stateName(ExecutionState state)
-{
-  switch (state) {
-    case ExecutionState::IDLE: return "IDLE";
-    case ExecutionState::RUNNING: return "RUNNING";
-    case ExecutionState::STOPPED: return "STOPPED";
-    case ExecutionState::SUCCEEDED: return "SUCCEEDED";
-    case ExecutionState::FAILED: return "FAILED";
-  }
-  return "UNKNOWN";
 }
 
 }  // namespace
@@ -91,7 +82,7 @@ public:
     control_timeout_ = node->declare_parameter("control_timeout", 0.2);
     tolerances_.xy = node->declare_parameter("xy_goal_tolerance", 0.3);
     tolerances_.yaw = node->declare_parameter("yaw_goal_tolerance", 3.14);
-    tolerances_.stopped_speed = node->declare_parameter("stopped_velocity_tolerance", 0.05);
+    tolerances_.stopped_speed = node->get_parameter("stopped_velocity_tolerance").as_double();
     const auto odom_topic = node->declare_parameter("odom_topic", std::string("/Odometry"));
     const auto cmd_topic = node->declare_parameter("cmd_vel_topic", std::string("/cmd_vel"));
     for (const auto value : {frequency_, odom_timeout_, tf_timeout_, control_timeout_,
@@ -105,42 +96,9 @@ public:
       throw std::invalid_argument("Invalid PathExecutor frequency or topic");
     }
     cmd_pub_ = node->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, rclcpp::QoS(1));
-    const auto state_qos = rclcpp::QoS(1).reliable().transient_local();
-    state_pub_ = node->create_publisher<std_msgs::msg::String>("nav_executor/execution_state", state_qos);
-    error_pub_ = node->create_publisher<std_msgs::msg::String>("nav_executor/execution_error", state_qos);
     publishZero();
 
-    rcl_interfaces::msg::ParameterDescriptor startup_only;
-    startup_only.read_only = true;
-    const auto plugins = node->declare_parameter<std::vector<std::string>>(
-      "controller_plugins", {"MPPI"}, startup_only);
-    const auto selected = node->declare_parameter(
-      "selected_controller", std::string("MPPI"), startup_only);
-    std::unordered_set<std::string> ids;
-    for (const auto & id : plugins) {
-      if (id.empty() || !ids.insert(id).second) {
-        throw std::invalid_argument("controller_plugins contains an empty or duplicate ID: " + id);
-      }
-    }
-    if (ids.count(selected) == 0) {
-      throw std::invalid_argument("selected_controller is not in controller_plugins: " + selected);
-    }
-    for (const auto & id : plugins) {
-      const auto type = node->declare_parameter(
-        id + ".plugin", std::string{}, startup_only);
-      if (type.empty()) {throw std::invalid_argument("Missing controller type: " + id + ".plugin");}
-      try {
-        auto controller = controller_loader_.createSharedInstance(type);
-        controller->initialize(node, id, costmap_);
-        controllers_.emplace(id, std::move(controller));
-      } catch (const std::exception & exception) {
-        throw std::runtime_error("Failed to load controller '" + id + "' (" + type +
-                "): " + exception.what());
-      }
-      RCLCPP_DEBUG(logger_, "Loaded controller %s (%s)", id.c_str(), type.c_str());
-    }
-    controller_ = controllers_.at(selected);
-    RCLCPP_INFO(logger_, "Selected controller: %s", selected.c_str());
+    controller_.initialize(node, "MPC", costmap_);
     // Keep input reception independent of an overdue control timer. All task
     // and controller mutations remain in the node's default callback group.
     odom_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -167,7 +125,7 @@ public:
       }, odom_options);
     timer_ = node->create_wall_timer(std::chrono::duration<double>(1.0 / frequency_),
       [this]() {tick();});
-    setState(ExecutionState::IDLE, "");
+    state_ = ExecutionState::IDLE;
 
   }
 
@@ -177,24 +135,41 @@ public:
     publishZero();
   }
 
-  void publishZero() {cmd_pub_->publish(geometry_msgs::msg::Twist{});}
-
-  void setState(ExecutionState state, const std::string & reason)
+  void publishZero()
   {
-    state_ = state;
-    std_msgs::msg::String msg;
-    msg.data = stateName(state);
-    state_pub_->publish(msg);
-    msg.data = reason;
-    error_pub_->publish(msg);
+    std::lock_guard<std::mutex> lock(command_mutex_);
+    cmd_pub_->publish(geometry_msgs::msg::Twist{});
+  }
+
+  void emergencyStop()
+  {
+    std::lock_guard<std::mutex> lock(command_mutex_);
+    emergency_stop_ = true;
+    cmd_pub_->publish(geometry_msgs::msg::Twist{});
+  }
+
+  void clearEmergencyStop()
+  {
+    std::lock_guard<std::mutex> lock(command_mutex_);
+    emergency_stop_ = false;
+  }
+
+  void publishCommand(const geometry_msgs::msg::Twist & command)
+  {
+    std::lock_guard<std::mutex> lock(command_mutex_);
+    cmd_pub_->publish(emergency_stop_ ? geometry_msgs::msg::Twist{} : command);
   }
 
   void stop(const std::string & reason)
   {
+    if (state_ == ExecutionState::RUNNING) {
+      RCLCPP_INFO(logger_, "Path execution stopped: %s", reason.c_str());
+    }
     path_.reset();
+    completion_wait_since_.reset();
     publishZero();  // Stop first, before potentially expensive optimizer reset.
-    controller_->reset();
-    setState(ExecutionState::STOPPED, reason);
+    controller_.reset();
+    state_ = ExecutionState::STOPPED;
   }
 
   void fail(const std::string & reason)
@@ -203,24 +178,39 @@ public:
     path_.reset();
     publishZero();
     if (had_path) {
-      controller_->reset();
-      setState(ExecutionState::FAILED, reason);
+      controller_.reset();
+      state_ = ExecutionState::FAILED;
       RCLCPP_WARN(logger_, "Path execution stopped: %s", reason.c_str());
       failure_(identity_, reason);
     }
   }
 
-  bool acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity)
+  bool acceptSegment(const topology_global_planner::Segment & segment,
+    SegmentIdentity identity, bool final_segment, bool continuous)
   {
+    const auto & path = segment.path;
     // An obsolete handoff must neither replace the plan nor stop its newer executor.
+    if (emergency_stop_) {publishZero(); return false;}
     if (!confirmation_(identity)) {
       RCLCPP_WARN(logger_, "Ignoring unconfirmed path: goal_id=%lu plan_generation=%lu",
         static_cast<unsigned long>(identity.goal_id),
         static_cast<unsigned long>(identity.plan_generation));
       return false;
     }
-    stop("Replacing execution path");
+    if (continuous) {
+      const bool consecutive = state_ == ExecutionState::SUCCEEDED && !path_ &&
+        identity.goal_id == identity_.goal_id && identity.plan_generation == identity_.plan_generation &&
+        identity.segment_index == identity_.segment_index + 1;
+      if (!consecutive) {
+        stop("Invalid continuous segment handoff");
+        failure_(identity, "Invalid continuous segment handoff");
+        return false;
+      }
+    } else {
+      stop("Replacing execution path");
+    }
     identity_ = identity;
+    final_segment_ = final_segment;
     try {
       if (path.poses.empty() || path.header.frame_id.empty()) {
         throw std::invalid_argument("Cannot execute an empty path or frame");
@@ -232,14 +222,35 @@ public:
           throw std::invalid_argument("Invalid pose or inconsistent frame in execution path");
         }
       }
-      controller_->setPlan(path);
+      if (segment.type == topology_global_planner::SegmentType::CONNECTOR &&
+        (!finitePose(segment.wait_pose.pose) || !finitePose(segment.exit_pose.pose) ||
+        !std::isfinite(segment.corridor_half_width) || segment.corridor_half_width <= 0.0))
+      {
+        throw std::invalid_argument("Invalid connector geometry or width");
+      }
+      segment_ = segment;
+      connector_progress_ = -INFINITY;
+      segment_tolerances_ = tolerances_;
+      if (!final_segment || segment.type == topology_global_planner::SegmentType::CONNECTOR) {
+        segment_tolerances_.xy = std::min(tolerances_.xy, 0.05);
+        // Preserve the configured chassis-yaw policy. Omni/fixed-heading
+        // controllers cannot satisfy an extra portal-heading requirement.
+        // Directed portal order and corridor checks constrain route direction.
+      }
+      controller_.setPlan(path);
       path_ = path;
-      setState(ExecutionState::RUNNING, "");
+      RCLCPP_INFO(logger_, "Executing segment: goal_id=%lu generation=%lu index=%zu type=%s connector=%s "
+        "xy_tolerance=%.3f yaw_tolerance=%.3f",
+        static_cast<unsigned long>(identity_.goal_id),
+        static_cast<unsigned long>(identity_.plan_generation), identity_.segment_index,
+        segment.type == topology_global_planner::SegmentType::CONNECTOR ? "CONNECTOR" : "NORMAL",
+        segment.connector_id.c_str(), segment_tolerances_.xy, segment_tolerances_.yaw);
+      state_ = ExecutionState::RUNNING;
       return true;
     } catch (const std::exception & exception) {
       // Acceptance failure must also invalidate the TaskManager product.
       publishZero();
-      setState(ExecutionState::FAILED, exception.what());
+      state_ = ExecutionState::FAILED;
       failure_(identity_, exception.what());
       return false;
     }
@@ -292,6 +303,21 @@ public:
     return transformRobotVelocity(odom->twist.twist, transform);
   }
 
+  void reportCompletionWait(double distance, double yaw_error,
+    const geometry_msgs::msg::Twist & speed)
+  {
+    const auto now = TaskManager::Clock::now();
+    if (!completion_wait_since_) {completion_wait_since_ = now;}
+    if (now - *completion_wait_since_ < std::chrono::seconds(2)) {return;}
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000,
+      "Segment awaiting completion: index=%zu distance=%.3f/%.3f yaw_error=%.3f/%.3f "
+      "measured_speed=%.3f measured_wz=%.3f stopped_tolerance=%.3f",
+      identity_.segment_index, distance, segment_tolerances_.xy,
+      std::abs(yaw_error), segment_tolerances_.yaw,
+      std::hypot(speed.linear.x, speed.linear.y), std::abs(speed.angular.z),
+      tolerances_.stopped_speed);
+  }
+
   void tick()
   {
     if (!path_) {
@@ -299,6 +325,7 @@ public:
       publishZero();
       return;
     }
+    if (emergency_stop_) {stop("Emergency stop latched"); return;}
     if (!confirmation_(identity_)) {stop("TaskManager revoked execution path"); return;}
     try {
       if (!global_ready_() || !costmap_->isCurrent()) {
@@ -319,19 +346,58 @@ public:
       if (!finitePose(pose.pose) || !finitePose(goal.pose)) {
         throw std::runtime_error("Robot or goal TF pose is invalid");
       }
+      if (segment_.type == topology_global_planner::SegmentType::CONNECTOR) {
+        auto route_pose = pose;
+        route_pose.header.stamp = builtin_interfaces::msg::Time{};
+        route_pose = costmap_->getTfBuffer()->transform(route_pose, path_->header.frame_id);
+        const auto & wait = segment_.wait_pose.pose.position;
+        const auto & exit = segment_.exit_pose.pose.position;
+        const double dx = exit.x - wait.x, dy = exit.y - wait.y;
+        const double length = std::hypot(dx, dy);
+        if (length <= 1e-6) {throw std::runtime_error("Invalid connector geometry");}
+        const double px = route_pose.pose.position.x - wait.x;
+        const double py = route_pose.pose.position.y - wait.y;
+        const double progress = (px * dx + py * dy) / length;
+        const double lateral = std::abs(px * dy - py * dx) / length;
+        const auto & first = path_->poses.front().pose.position;
+        const double first_progress = ((first.x - wait.x) * dx + (first.y - wait.y) * dy) / length;
+        if (progress < std::min(-0.05, first_progress - 0.05) || progress > length + 0.05 ||
+          progress < connector_progress_ - 0.05 || lateral > segment_.corridor_half_width)
+        {
+          throw std::runtime_error("Robot left directed connector corridor or reversed traversal");
+        }
+        connector_progress_ = std::max(connector_progress_, progress);
+      }
+      auto route_pose = pose;
+      route_pose.header.stamp = builtin_interfaces::msg::Time{};
+      route_pose = costmap_->getTfBuffer()->transform(route_pose, path_->header.frame_id);
+      if (!confirmation_(identity_) || emergency_stop_) {publishZero(); return;}
       const double distance = std::hypot(pose.pose.position.x - goal.pose.position.x,
         pose.pose.position.y - goal.pose.position.y);
       const double yaw_error = std::remainder(
         tf2::getYaw(pose.pose.orientation) - tf2::getYaw(goal.pose.orientation), 2.0 * M_PI);
-      if (distance <= tolerances_.xy && std::abs(yaw_error) <= tolerances_.yaw) {
+      if (distance <= segment_tolerances_.xy && std::abs(yaw_error) <= segment_tolerances_.yaw) {
+        if (!final_segment_) {
+          // A segment boundary is a waypoint, not a stopped navigation goal.
+          // The synchronous callback hands off only the next confirmed segment.
+          path_.reset();
+          state_ = ExecutionState::SUCCEEDED;
+          completion_wait_since_.reset();
+          success_(identity_);
+          if (!path_ || state_ != ExecutionState::RUNNING) {publishZero();}
+          return;
+        }
         publishZero();
         if (std::hypot(speed.linear.x, speed.linear.y) <= tolerances_.stopped_speed &&
           std::abs(speed.angular.z) <= tolerances_.stopped_speed)
         {
           path_.reset();
-          controller_->reset();
-          setState(ExecutionState::SUCCEEDED, "");
+          controller_.reset();
+          state_ = ExecutionState::SUCCEEDED;
+          completion_wait_since_.reset();
           success_(identity_);
+        } else {
+          reportCompletionWait(distance, yaw_error, speed);
         }
         return;
       }
@@ -346,7 +412,7 @@ public:
         }
       }
       const auto began = TaskManager::Clock::now();
-      const auto command = controller_->computeVelocityCommands(pose, speed, tolerances_);
+      auto command = controller_.computeVelocityCommands(pose, speed);
       if (std::chrono::duration<double>(TaskManager::Clock::now() - began).count() >
         control_timeout_ || !finiteTwist(command.twist))
       {
@@ -361,17 +427,17 @@ public:
       }
       // Report validated controller feedback in the confirmed global path frame.
       // The monitor callback can synchronously revoke this path through TaskManager.
-      tf2::Transform local_from_path;
-      tf2::fromMsg(path_tf.transform, local_from_path);
-      auto path_from_local = path_tf;
-      path_from_local.header.frame_id = path_->header.frame_id;
-      path_from_local.child_frame_id = costmap_->getGlobalFrameID();
-      path_from_local.transform = tf2::toMsg(local_from_path.inverse());
-      geometry_msgs::msg::PoseStamped route_pose;
-      tf2::doTransform(pose, route_pose, path_from_local);
       observation_(identity_, route_pose, command.twist);
       if (!path_ || !confirmation_(identity_)) {publishZero(); return;}
-      cmd_pub_->publish(command.twist);
+      if (distance <= std::max(0.3, 2.0 * segment_tolerances_.xy) &&
+        std::hypot(command.twist.linear.x, command.twist.linear.y) < 0.1 &&
+        std::abs(command.twist.angular.z) < 0.1)
+      {
+        reportCompletionWait(distance, yaw_error, speed);
+      } else {
+        completion_wait_since_.reset();
+      }
+      publishCommand(command.twist);
     } catch (const std::exception & exception) {
       fail(exception.what());
     }
@@ -384,25 +450,26 @@ public:
   Success success_;
   Confirmation confirmation_;
   Observation observation_;
+  std::atomic<bool> emergency_stop_{false};
+  std::mutex command_mutex_;
   rclcpp::Logger logger_;
   rclcpp::Clock::SharedPtr clock_;
   double frequency_, odom_timeout_, tf_timeout_, control_timeout_;
-  GoalTolerances tolerances_;
-  // Declaration order keeps libraries loaded until all plugin instances are destroyed.
-  pluginlib::ClassLoader<ControllerPlugin> controller_loader_{
-    "nav_executor", "nav_executor::ControllerPlugin"};
-  std::unordered_map<std::string, std::shared_ptr<ControllerPlugin>> controllers_;
-  std::shared_ptr<ControllerPlugin> controller_;
+  GoalTolerances tolerances_, segment_tolerances_;
+  std::optional<TaskManager::Clock::time_point> completion_wait_since_;
+  topology_global_planner::Segment segment_;
+  bool final_segment_{true};
+  double connector_progress_{-INFINITY};
+  minco_controller::MincoMpcController controller_;
   std::optional<nav_msgs::msg::Path> path_;
   std::mutex odom_mutex_;
   std::optional<nav_msgs::msg::Odometry> odom_;
   std::string odom_error_;
   rclcpp::CallbackGroup::SharedPtr odom_group_;
   TaskManager::Clock::time_point odom_received_{};
-  PlanIdentity identity_;
+  SegmentIdentity identity_;
   ExecutionState state_{ExecutionState::IDLE};
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_, error_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
@@ -414,8 +481,11 @@ PathExecutor::PathExecutor(const rclcpp::Node::SharedPtr & node,
 : impl_(std::make_unique<Impl>(node, std::move(local_costmap), std::move(global_map_ready),
     std::move(failure), std::move(success), std::move(confirmation), std::move(observation))) {}
 PathExecutor::~PathExecutor() = default;
-bool PathExecutor::acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity)
-{return impl_->acceptPath(path, identity);}
+bool PathExecutor::acceptSegment(const topology_global_planner::Segment & segment,
+  SegmentIdentity identity, bool final_segment, bool continuous)
+{return impl_->acceptSegment(segment, identity, final_segment, continuous);}
+void PathExecutor::emergencyStop() {impl_->emergencyStop();}
+void PathExecutor::clearEmergencyStop() {impl_->clearEmergencyStop();}
 void PathExecutor::stop(const std::string & reason) {impl_->stop(reason);}
 ExecutionState PathExecutor::state() const {return impl_->state_;}
 }  // namespace nav_executor

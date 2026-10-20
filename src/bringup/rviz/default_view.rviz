@@ -16,7 +16,9 @@ Panels:
         - /Path1
         - /PointCloud21
         - /PointCloud21/Topic1
-        - /Path2
+        - /MarkerArray2
+        - /MarkerArray2/Status1
+        - /MarkerArray2/Topic1
       Splitter Ratio: 0.5833333134651184
     Tree Height: 984
   - Class: rviz_common/Selection
@@ -288,33 +290,17 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: false
-    - Alpha: 1
-      Buffer Length: 1
-      Class: rviz_default_plugins/Path
-      Color: 25; 255; 0
+    - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Head Diameter: 0.30000001192092896
-      Head Length: 0.20000000298023224
-      Length: 0.30000001192092896
-      Line Style: Lines
-      Line Width: 0.029999999329447746
-      Name: Path
-      Offset:
-        X: 0
-        Y: 0
-        Z: 0
-      Pose Color: 255; 85; 255
-      Pose Style: None
-      Radius: 0.029999999329447746
-      Shaft Diameter: 0.10000000149011612
-      Shaft Length: 0.10000000149011612
+      Name: MarkerArray
+      Namespaces:
+        connectors: true
       Topic:
         Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
+        Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /optimal_trajectory
+        Value: /TopoPlanner/connector_debug_markers
       Value: true
   Enabled: true
   Global Options:

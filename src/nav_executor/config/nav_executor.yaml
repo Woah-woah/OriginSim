@@ -15,6 +15,14 @@ nav_executor:
     xy_goal_tolerance: 0.3
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
+    connector_executor:
+      enabled: true            # /serial/head_dowm_cmd must have a single command owner
+      region_half_width: 0.8   # m, perpendicular to connector entrance -> exit
+      entry_extension: 1.0     # m, before entrance; full footprint intersection triggers
+      exit_extension: 0.3      # m, beyond exit
+      exit_hysteresis: 0.05    # m, extra clearance before releasing low-head command
+      exit_debounce: 0.2       # s, continuously outside before release
+      pose_timeout: 0.5        # s, stale/missing TF preserves command and retained regions
     route_monitor:
       enabled: true
       deviation_distance: 0.5
@@ -30,14 +38,7 @@ nav_executor:
         safety_margin: 0.05
         confirmations: 3
         maximum_sample_gap: 1.0
-    controller_plugins: ["MPPI", "MPC"]
-    selected_controller: "MPPI"  # MPPI or MPC; restart after changing
-    MPPI:
-      plugin: "mppi_controller/MPPIController"
-      open_loop: false
-
     MPC:
-      plugin: minco_controller/MPCController
       dt: 0.05
       horizon: 10
       Q: [5.0, 5.0, 2.0]
@@ -80,17 +81,12 @@ topology_planner:
   ros__parameters:
     use_sim_time: false
     TopoPlanner:
-      topology_yaml: ""  # launch resolves the installed topology_global_planner config
+      topology_yaml: "topo25.yaml"  # relative to topology_global_planner/config
       use_topology: true
-      fallback_to_inner_planner: false
       allow_nearest_region_fallback: false
-      enforce_region_constraint: true
       region_boundary_tolerance: 0.03
       region_constraint_tolerance: 0.15
       transform_tolerance: 0.1
-      duplicate_pose_tolerance: 0.02
-      blocked_goal_reset_distance: 0.50
-      blocked_connector_cost: 999.0
       grid:
         tolerance: 0.2
         use_astar: false

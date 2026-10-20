@@ -51,12 +51,6 @@ def generate_launch_description():
             get_package_share_directory('modify_map_to_odom'), 'launch', 'modify.launch.py'))
     )
 
-    seg = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(
-            get_package_share_directory('linefit_ground_segmentation_ros'),
-            'launch', 'segmentation.launch.py'))
-    )
-
     load_map_server = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('map_server'), 'launch', 'map_server.launch.py')),
@@ -77,7 +71,6 @@ def generate_launch_description():
         container,
         modify,
         start_rviz,
-        # seg,
         load_map_server,
         fake_baselink,
     ])

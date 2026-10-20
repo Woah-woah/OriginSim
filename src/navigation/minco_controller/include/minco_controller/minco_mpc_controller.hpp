@@ -5,21 +5,25 @@
 
 #include "minco_controller/mpc_solver.hpp"
 #include "minco_controller/path_trajectory.hpp"
-#include "nav_executor/controller_plugin.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
+#include "nav_msgs/msg/path.hpp"
+#include "rclcpp/node.hpp"
+
+namespace map_server {class CostmapClient;}
 
 namespace minco_controller
 {
-class MincoMpcController : public nav_executor::ControllerPlugin
+class MincoMpcController
 {
 public:
   void initialize(const rclcpp::Node::WeakPtr & node, const std::string & name,
-    const std::shared_ptr<map_server::CostmapClient> & costmap) override;
-  void setPlan(const nav_msgs::msg::Path & path) override;
-  void reset() override;
+    const std::shared_ptr<map_server::CostmapClient> & costmap);
+  void setPlan(const nav_msgs::msg::Path & path);
+  void reset();
   geometry_msgs::msg::TwistStamped computeVelocityCommands(
     const geometry_msgs::msg::PoseStamped & pose,
-    const geometry_msgs::msg::Twist & measured_speed,
-    const nav_executor::GoalTolerances & tolerances) override;
+    const geometry_msgs::msg::Twist & measured_speed);
 
 private:
   void checkPrediction(const std::vector<State> & prediction, const std::string & stage) const;

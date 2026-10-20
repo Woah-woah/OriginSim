@@ -16,7 +16,7 @@ class PathPlanner
 {
 public:
   using CancelChecker = std::function<bool()>;
-  using Plan = std::function<nav_msgs::msg::Path(const PlanningRequest &, CancelChecker)>;
+  using Plan = std::function<topology_global_planner::TopologyPlan(const PlanningRequest &, CancelChecker)>;
   using Poll = std::function<void()>;
   PathPlanner(Plan plan, Poll poll = []() {});
   ~PathPlanner();

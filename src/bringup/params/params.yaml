@@ -6,7 +6,7 @@ map_server:
 dynamic_map:
   ros__parameters:
     use_sim_time: true
-    enabled: true
+    enabled: false
     cloud_topic: /cloud_registered
     static_pcd: "rmuc2026.pcd"
     static_pcd_frame: map          # PCD 本身的坐标系，必须与实际地图一致
@@ -119,14 +119,20 @@ nav_executor:
     controller_frequency: 50.0
     odom_topic: "/odom"
     cmd_vel_topic: "/cmd_vel"
-    controller_plugins: ["MPPI", "MPC"]
-    selected_controller: "MPC"
     odom_timeout: 0.5
     tf_timeout: 0.5
     control_timeout: 0.2
     xy_goal_tolerance: 0.3
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
+    connector_executor:
+      enabled: false
+      region_half_width: 0.8   # 矩形半宽
+      entry_extension: 1.0     # 入口前面
+      exit_extension: 0.3      # 出口后面
+      exit_hysteresis: 0.05    # 出口死区
+      exit_debounce: 0.2       # s, continuously outside before release
+      pose_timeout: 0.5        # s, stale/missing TF preserves command and retained regions
     route_monitor:
       enabled: true
       deviation_distance: 0.5
@@ -142,72 +148,7 @@ nav_executor:
         safety_margin: 0.05
         confirmations: 3
         maximum_sample_gap: 1.0
-    MPPI:
-      plugin: "mppi_controller/MPPIController"
-      open_loop: false
-      time_steps: 100       # prediction_time = time_steps × model_dt
-      model_dt: 0.02       # prediction_distance ≈ prediction_time × max_speed 全向底盘应该考虑合速度
-      batch_size: 1000     # model_dt ≈ 1 / controller_frequency 其实就是控制周期 可以比控制周期小 不建议更大
-      vx_std: 0.45          # 采样标准差控制搜索范围
-      vy_std: 0.45
-      wz_std: 0.1
-      vx_max: 2.0
-      vx_min: -2.0
-      vy_max: 2.0
-      wz_max: 0.1
-      ax_max: 15.0         # 太小会速度慢
-      ax_min: -15.0
-      ay_min: -15.0
-      ay_max: 15.0
-      az_max: 0.1
-      iteration_count: 1   # 每周期优化次数
-      prune_distance: 2.8  # 控制前方约多远的全局路径
-      transform_tolerance: 0.1
-      temperature: 0.5         # cost选择锐度 越小越偏向最低 cost 轨迹
-      gamma: 0.015             # 控制平滑/能量权衡一般不要乱动
-      motion_model: "Omni"
-      visualize: true
-      regenerate_noises: false  # 是否每轮重新采样噪声 false可以减少计算抖动
-      TrajectoryVisualizer:
-        trajectory_step: 5
-        time_step: 3
-      critics: ["ConstraintCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic", "ObstaclesCritic"]
-      ConstraintCritic:  # 惩罚违反运动学或动力学约束的轨迹
-        enabled: true
-        cost_power: 1
-        cost_weight: 8.0
-      GoalCritic:        # 靠近目标以后，让机器人真正向目标位置收敛
-        enabled: true
-        cost_power: 1
-        cost_weight: 5.0
-        threshold_to_consider: 1.7       # Dprediction = time_steps × model_dt × max_speed
-      PathFollowCritic:  # 和GoalCritic是一对, 沿着路径取得进展, 负责往前走的意愿
-        enabled: true
-        cost_power: 1
-        cost_weight: 11.0
-        offset_from_furthest: 7
-        threshold_to_consider: 1.5
-      PathAlignCritic:   # 贴着全局路径
-        enabled: true
-        cost_power: 1
-        cost_weight: 15.0
-        max_path_occupancy_ratio: 0.07 # 当全局路径有较多部分被障碍物占据时, PathAlignCritic减少/停止发挥作用
-        trajectory_point_step: 4
-        threshold_to_consider: 0.5
-        offset_from_furthest: 5       # 候选轨迹至少沿全局路径推进到一定程度之后，再开始强调路径对齐
-        use_path_orientations: false
-      ObstaclesCritic:
-        enabled: true
-        cost_power: 1
-        repulsion_weight: 7.0      # 和inflation_radius cost_scaling_factor 机器人尺寸强相关
-        critical_weight: 1000.0      # 马上快撞了！
-        consider_footprint: false   # false时主要使用点/圆形机器人形式的检查
-        collision_cost: 10000.0
-        collision_margin_distance: 0.05  # 真实碰撞边界之外留一层严重惩罚区
-        near_goal_distance: 0.5
-
     MPC:
-      plugin: minco_controller/MPCController
       dt: 0.02
       horizon: 25
       Q: [5.0, 5.0, 2.0]
@@ -215,7 +156,6 @@ nav_executor:
       control_delta_weight: [2.0, 2.0, 0.5]
       q_along: 3.0
       q_cross: 12.0
-      # w * C_linearized(x,y)^2; sequential convex QPs, metres for distances.
       obstacle_weight: 30.0
       obstacle_smoothing_distance: 0.2
       obstacle_trust_region: 0.15
@@ -251,17 +191,12 @@ topology_planner:
   ros__parameters:
     use_sim_time: true
     TopoPlanner:
-      topology_yaml: "topo25.yaml"  
+      topology_yaml: "topo25.yaml"
       use_topology: false
-      fallback_to_inner_planner: false
       allow_nearest_region_fallback: false
-      enforce_region_constraint: true
       region_boundary_tolerance: 0.03
       region_constraint_tolerance: 0.15
       transform_tolerance: 0.1
-      duplicate_pose_tolerance: 0.02
-      blocked_goal_reset_distance: 0.50
-      blocked_connector_cost: 999.0
       grid:
         tolerance: 0.2
         use_astar: false

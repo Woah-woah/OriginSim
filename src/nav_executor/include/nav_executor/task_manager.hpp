@@ -6,7 +6,7 @@
 #include <string>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "nav_msgs/msg/path.hpp"
+#include "topology_global_planner/topology_plan.hpp"
 
 namespace nav_executor
 {
@@ -22,9 +22,18 @@ struct PlanIdentity
   bool operator!=(const PlanIdentity & other) const {return !(*this == other);}
 };
 
+// Every segment handoff changes this token even within the same planning result.
+struct SegmentIdentity : PlanIdentity
+{
+  size_t segment_index{0};
+  bool operator==(const SegmentIdentity & other) const
+  {return PlanIdentity::operator==(other) && segment_index == other.segment_index;}
+  bool operator!=(const SegmentIdentity & other) const {return !(*this == other);}
+};
+
 struct ReplanEvent
 {
-  PlanIdentity identity;
+  SegmentIdentity identity;
   ReplanReason reason{ReplanReason::NONE};
   double path_distance{0.0};
   double progress{0.0};
@@ -36,12 +45,13 @@ struct PlanningRequest
 {
   PlanIdentity identity;
   geometry_msgs::msg::PoseStamped goal;
+  std::optional<topology_global_planner::Segment> active_connector;
 };
 
 struct PlanningResult
 {
   PlanIdentity identity;
-  nav_msgs::msg::Path path;
+  topology_global_planner::TopologyPlan plan;
   std::string error;
 };
 
@@ -57,16 +67,21 @@ public:
   void cancel();
   std::optional<PlanningRequest> nextRequest(bool map_ready, Clock::time_point now);
   bool accept(PlanningResult result, Clock::time_point now);
-  bool executionFailed(PlanIdentity identity, const std::string & error, Clock::time_point now);
-  bool executionSucceeded(PlanIdentity identity);
+  bool executionFailed(SegmentIdentity identity, const std::string & error, Clock::time_point now);
+  bool segmentSucceeded(SegmentIdentity identity);
   bool routeInvalid(const ReplanEvent & event, Clock::time_point now);
-  bool isPathConfirmed(PlanIdentity identity) const;
+  bool isSegmentConfirmed(SegmentIdentity identity) const;
   PlanIdentity identity() const {return identity_;}
   uint64_t generation() const {return identity_.plan_generation;}
   uint64_t replanCount() const {return replan_count_;}
   ReplanReason lastReplanReason() const {return last_replan_reason_;}
   TaskState state() const {return state_;}
-  const nav_msgs::msg::Path & path() const {return path_;}
+  const topology_global_planner::TopologyPlan & plan() const {return plan_;}
+  const topology_global_planner::Segment * currentSegment() const;
+  SegmentIdentity segmentIdentity() const {return SegmentIdentity{identity_, segment_index_};}
+  bool beginSegment(SegmentIdentity identity);
+  bool commitConnector(const topology_global_planner::Segment & connector, SegmentIdentity owner);
+  bool finalSegment() const {return segment_index_ + 1 == plan_.segments.size();}
   const std::string & error() const {return error_;}
   static const char * stateName(TaskState state);
   static const char * reasonName(ReplanReason reason);
@@ -83,7 +98,10 @@ private:
   ReplanReason last_replan_reason_{ReplanReason::NONE};
   std::optional<geometry_msgs::msg::PoseStamped> goal_;
   TaskState state_{TaskState::IDLE};
-  nav_msgs::msg::Path path_;
+  topology_global_planner::TopologyPlan plan_;
+  size_t segment_index_{0};
+  // Physical commitment survives goal replacement, cancellation and planning retries.
+  std::optional<topology_global_planner::Segment> active_connector_;
   std::string error_;
 };
 }  // namespace nav_executor

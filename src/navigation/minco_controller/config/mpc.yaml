@@ -1,11 +1,6 @@
 nav_executor:
   ros__parameters:
-    controller_plugins:
-    - MPPI
-    - MPC
-    selected_controller: MPC
     MPC:
-      plugin: minco_controller/MPCController
       dt: 0.05
       horizon: 10
       Q:

@@ -20,6 +20,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import GroupAction
+from launch.actions import OpaqueFunction
 from launch.actions import SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -29,7 +30,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
 
     bringup_dir = get_package_share_directory('bringup')
-    planner_dir = get_package_share_directory('topology_global_planner')
 
     namespace = LaunchConfiguration('namespace')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -61,8 +61,8 @@ def generate_launch_description():
 
     declare_topology_file_cmd = DeclareLaunchArgument(
         'topology_file',
-        default_value=os.path.join(planner_dir, 'config', 'topo.yaml'),
-        description='topology的yaml')
+        default_value='',
+        description='Override TopoPlanner.topology_yaml; empty uses params_file')
 
     declare_use_respawn_cmd = DeclareLaunchArgument(
         'use_respawn', default_value='false',
@@ -72,23 +72,24 @@ def generate_launch_description():
         'log_level', default_value='info',
         description='Log level')
 
-    load_nodes = GroupAction(
-        actions=[
-            Node(
-                package='nav_executor',
-                executable='nav_executor_node',
-                namespace=namespace,
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[params_file, clock_params,
-                            {'navigation_params_file': params_file,
-                             'TopoPlanner.topology_yaml': topology_file}],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings
-            ),
-        ]
-    )
+    def launch_executor(context):
+        overrides = {'navigation_params_file': params_file}
+        topology_override = topology_file.perform(context).strip()
+        if topology_override:
+            overrides['TopoPlanner.topology_yaml'] = topology_override
+        return [Node(
+            package='nav_executor',
+            executable='nav_executor_node',
+            namespace=namespace,
+            output='screen',
+            respawn=use_respawn,
+            respawn_delay=2.0,
+            parameters=[params_file, clock_params, overrides],
+            arguments=['--ros-args', '--log-level', log_level],
+            remappings=remappings,
+        )]
+
+    load_nodes = GroupAction(actions=[OpaqueFunction(function=launch_executor)])
 
     # Create the launch description and populate
     ld = LaunchDescription()

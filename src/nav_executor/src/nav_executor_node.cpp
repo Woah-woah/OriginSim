@@ -1,12 +1,18 @@
 #include <cmath>
 #include <csignal>
 #include <future>
+#include <filesystem>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
 
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include "nav_executor/path_planner.hpp"
+#include "nav_executor/connector_executor.hpp"
+#include "referee_msg/msg/referee.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "nav_executor/path_executor.hpp"
 #include "nav_executor/route_monitor.hpp"
 #include "nav_executor/path_collision.hpp"
@@ -93,14 +99,18 @@ void validateTopology(const std::string & filename)
     {
       throw std::invalid_argument("Invalid topology connector: " + id);
     }
-    connector["action"].as<std::string>();
+    const auto action = connector["action"].as<std::string>();
+    if (action != "down" && action != "step") {
+      throw std::invalid_argument("Unsupported connector action: " + action);
+    }
   }
 }
 
 class NavExecutor : public rclcpp::Node
 {
 public:
-  explicit NavExecutor(std::shared_ptr<map_server::CostmapClient> costmap)
+  NavExecutor(std::shared_ptr<map_server::CostmapClient> costmap,
+    const std::shared_ptr<map_server::CostmapClient> & local_costmap)
   : Node("nav_executor"), costmap_(std::move(costmap)),
     tasks_(declare_parameter("goal_tolerance", 0.02), declare_parameter("retry_delay", 1.0),
       declare_parameter("route_monitor.replan_cooldown", 2.0))
@@ -116,12 +126,8 @@ public:
     global_frame_ = costmap_->getGlobalFrameID();
     const auto qos = rclcpp::QoS(1).reliable().transient_local();
     path_pub_ = create_publisher<nav_msgs::msg::Path>("plan", qos);
-    state_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/state", qos);
-    error_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/error", qos);
-    reason_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/replan_reason", qos);
-    count_pub_ = create_publisher<std_msgs::msg::UInt64>("nav_executor/replan_count", qos);
     goal_id_pub_ = create_publisher<std_msgs::msg::UInt64>("nav_executor/goal_id", qos);
-    generation_pub_ = create_publisher<std_msgs::msg::UInt64>("nav_executor/plan_generation", qos);
+    segment_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/segment", qos);
     RouteMonitorConfig monitor_config;
     monitor_config.enabled = declare_parameter("route_monitor.enabled", true);
     monitor_config.deviation_distance = declare_parameter("route_monitor.deviation_distance", 0.5);
@@ -149,16 +155,71 @@ public:
     RCLCPP_DEBUG(get_logger(), "Path blocked monitor: lookahead=%.2fm confirmations=%d clearance=%.2fm",
       monitor_config.blocked_lookahead_distance, monitor_config.blocked_confirmations, path_clearance_);
 
-    // Separate node so the planner's existing mutable connector callbacks can be
-    // serviced exclusively on the planning thread, between planning calls.
+    declare_parameter("stopped_velocity_tolerance", 0.05);
+    double body_radius = std::max(costmap_->settings().robot_radius, local_costmap->settings().robot_radius);
+    for (const auto & client : {costmap_, local_costmap}) {
+      for (const auto & vertex : client->getRobotFootprint()) {
+        body_radius = std::max(body_radius, std::hypot(vertex.x, vertex.y));
+      }
+    }
+    ConnectorConfig connector_config;
+    const bool connector_enabled = declare_parameter("connector_executor.enabled", true);
+    connector_config.region_half_width = declare_parameter("connector_executor.region_half_width", 0.8);
+    connector_config.entry_extension = declare_parameter("connector_executor.entry_extension", 1.0);
+    connector_config.exit_extension = declare_parameter("connector_executor.exit_extension", 0.3);
+    connector_config.exit_hysteresis = declare_parameter("connector_executor.exit_hysteresis", 0.05);
+    connector_config.exit_debounce = declare_parameter("connector_executor.exit_debounce", 0.2);
+    connector_config.pose_timeout = declare_parameter("connector_executor.pose_timeout", 0.5);
+    connector_pose_timeout_ = connector_config.pose_timeout;
+    if (connector_enabled) {
+      pitch_pub_ = create_publisher<std_msgs::msg::Bool>("/serial/head_down_cmd", rclcpp::QoS(10).reliable());
+      connector_ = std::make_unique<ConnectorExecutor>(connector_config, global_frame_,
+        costmap_->getRobotFootprint(), [this](bool lower) {
+          std_msgs::msg::Bool message;
+          message.data = lower;
+          pitch_pub_->publish(message);
+          RCLCPP_INFO(get_logger(), "Connector /serial/head_down_cmd=%s", lower ? "true" : "false");
+        }, [this](const std::string & message) {RCLCPP_INFO(get_logger(), "%s", message.c_str());});
+      referee_sub_ = create_subscription<referee_msg::msg::Referee>("/Referee",
+        rclcpp::SensorDataQoS().keep_last(1), [this](referee_msg::msg::Referee::ConstSharedPtr msg) {
+          if (!last_head_status_ || *last_head_status_ != msg->head_status) {
+            const char * status = msg->head_status == 1 ? "LOWERED" :
+              (msg->head_status == 2 ? "RAISED" : "UNKNOWN");
+            RCLCPP_INFO(get_logger(), "Referee head_status=%u (%s), diagnostic only",
+              static_cast<unsigned>(msg->head_status), status);
+            last_head_status_ = msg->head_status;
+          }
+        });
+    }
+    // Resume an already committed approach without moving the YAML portal endpoints.
+    connector_entry_clearance_ = body_radius + 0.25;
+
+    // Planner region reporting runs exclusively on the planning worker.
     planner_node_ = std::make_shared<rclcpp::Node>("topology_planner");
     const bool use_topology = planner_node_->declare_parameter("TopoPlanner.use_topology", true);
-    const auto yaml = planner_node_->declare_parameter("TopoPlanner.topology_yaml", std::string{});
-    if (use_topology && yaml.empty()) {
+    const auto configured_yaml = planner_node_->declare_parameter("TopoPlanner.topology_yaml", std::string{});
+    if (use_topology && configured_yaml.empty()) {
       throw std::invalid_argument("TopoPlanner.topology_yaml is required when topology is enabled");
     }
-    if (use_topology) {validateTopology(yaml);}
+    if (use_topology) {
+      auto yaml_path = std::filesystem::path(configured_yaml);
+      if (yaml_path.is_relative()) {
+        yaml_path = std::filesystem::path(
+          ament_index_cpp::get_package_share_directory("topology_global_planner")) /
+          "config" / yaml_path;
+      }
+      yaml_path = yaml_path.lexically_normal();
+      if (!std::filesystem::is_regular_file(yaml_path)) {
+        throw std::invalid_argument("Topology YAML does not exist: " + yaml_path.string() +
+          " (configured as '" + configured_yaml + "')");
+      }
+      validateTopology(yaml_path.string());
+      planner_node_->set_parameter(rclcpp::Parameter("TopoPlanner.topology_yaml", yaml_path.string()));
+      RCLCPP_INFO(get_logger(), "Topology YAML: %s", yaml_path.c_str());
+    }
     planner_ = std::make_unique<topology_global_planner::TopologyGlobalPlanner>();
+    planner_node_->declare_parameter("TopoPlanner.connector_entry_clearance", connector_entry_clearance_);
+    planner_node_->set_parameter(rclcpp::Parameter("TopoPlanner.connector_entry_clearance", connector_entry_clearance_));
     planner_->initialize(planner_node_, costmap_->getTfBuffer(), &snapshot_,
       global_frame_, costmap_->getBaseFrameID());
     planner_executor_.add_node(planner_node_);
@@ -187,7 +248,7 @@ public:
         auto timed_cancel = [cancelled, deadline]() {
             return cancelled() || !rclcpp::ok() || TaskManager::Clock::now() >= deadline;
           };
-        auto path = planner_->plan(start, request.goal, timed_cancel);
+        auto path = planner_->plan(start, request.goal, request.active_connector, timed_cancel);
         if (TaskManager::Clock::now() >= deadline) {
           throw std::runtime_error("Global planning timed out");
         }
@@ -252,14 +313,14 @@ public:
           // 无效目标只报错，不取消正在执行的任务
           RCLCPP_WARN(get_logger(), "Rejected goal: %s", exception.what());
 
-          std_msgs::msg::String error;
-          error.data = exception.what();
-          error_pub_->publish(error);
-
           return;
         }
 
         // 2. 判断目标是否真的发生变化
+        if (emergency_latched_) {
+          RCLCPP_WARN(get_logger(), "Rejected goal: emergency stop is latched; reset it before submitting a goal");
+          return;
+        }
         if (!tasks_.setGoal(goal)) {
           // 重复目标：不停车、不重新设置路径
           return;
@@ -296,17 +357,42 @@ public:
           publishTask();
         }
       });
+    emergency_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    emergency_srv_ = create_service<std_srvs::srv::Trigger>("nav_executor/emergency_stop",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+      std_srvs::srv::Trigger::Response::SharedPtr response) {
+        std::lock_guard<std::mutex> lock(emergency_mutex_);
+        emergency_latched_ = true;
+        if (executor_) {executor_->emergencyStop();}
+        emergency_stop_requested_ = true;
+        response->success = true;
+        response->message = "Emergency stop latched; zero command published";
+      }, rclcpp::ServicesQoS(), emergency_group_);
+    reset_emergency_srv_ = create_service<std_srvs::srv::Trigger>("nav_executor/reset_emergency_stop",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+      std_srvs::srv::Trigger::Response::SharedPtr response) {
+        std::lock_guard<std::mutex> lock(emergency_mutex_);
+        cancelForEmergency();
+        if (executor_) {executor_->clearEmergencyStop();}
+        emergency_latched_ = false;
+        response->success = true;
+        response->message = "Emergency stop cleared; task cancelled, submit a new goal";
+      });
     tick_ = create_wall_timer(std::chrono::duration<double>(1.0 / tick_frequency), [this]() {
       const auto now = TaskManager::Clock::now();
-      checkPathBlocked(now);
+      if (emergency_stop_requested_.exchange(false)) {cancelForEmergency();}
+      geometry_msgs::msg::PoseStamped pose;
+      const bool pose_available = costmap_->getRobotPose(pose);
+      updateConnector(pose_available ? &pose : nullptr, now);
+      checkPathBlocked(now, pose_available ? &pose : nullptr);
       if (auto result = worker_->takeResult()) {
-        if (result->identity == tasks_.identity() && !result->path.poses.empty()) {
+        if (result->identity == tasks_.identity() && !result->plan.full_path.poses.empty()) {
           auto * grid = costmap_->getCostmap();
           std::lock_guard<map_server::Costmap2D::mutex_t> lock(*grid->getMutex());
-          if (!costmap_->isCurrent() || result->path.header.frame_id != global_frame_ ||
-            !pathIsClear(result->path, *grid, path_clearance_))
+          if (!costmap_->isCurrent() || result->plan.full_path.header.frame_id != global_frame_ ||
+            !pathIsClear(result->plan.full_path, *grid, path_clearance_))
           {
-            result->path.poses.clear();
+            result->plan.full_path.poses.clear();
             result->error = "Rejected plan: latest costmap is stale or path footprint is blocked";
           }
         }
@@ -315,12 +401,7 @@ public:
             RCLCPP_WARN(get_logger(), "Planning failed: %s", tasks_.error().c_str());
           }
           if (executor_ && tasks_.state() == TaskState::PATH_READY) {
-            if (executor_->acceptPath(tasks_.path(), tasks_.identity()) && tasks_.replanCount() > 0) {
-              RCLCPP_INFO(get_logger(), "Replan accepted: goal_id=%lu generation=%lu count=%lu; latest-map clearance verified",
-                static_cast<unsigned long>(tasks_.identity().goal_id),
-                static_cast<unsigned long>(tasks_.generation()),
-                static_cast<unsigned long>(tasks_.replanCount()));
-            }
+            dispatchSegment(false);
           }
           publishTask();
         }
@@ -341,21 +422,26 @@ public:
         std::unique_lock<map_server::Costmap2D::mutex_t> lock(*costmap_->getCostmap()->getMutex());
         return costmap_->isCurrent();
       },
-      [this](PlanIdentity identity, const std::string & error) {
+      [this](SegmentIdentity identity, const std::string & error) {
         if (tasks_.executionFailed(identity, error, TaskManager::Clock::now())) {
           worker_->invalidate(tasks_.generation());
           publishTask();
         }
       },
-      [this](PlanIdentity identity) {
-        if (tasks_.executionSucceeded(identity)) {publishTask();}
+      [this](SegmentIdentity identity) {
+        if (tasks_.segmentSucceeded(identity)) {
+          monitor_->reset();
+          if (tasks_.state() == TaskState::PATH_READY) {dispatchSegment(true);}
+          publishTask();
+        }
       },
-      [this](PlanIdentity identity) {return tasks_.isPathConfirmed(identity);},
-      [this](PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose,
+      [this](SegmentIdentity identity) {return tasks_.isSegmentConfirmed(identity);},
+      [this](SegmentIdentity identity, const geometry_msgs::msg::PoseStamped & pose,
         const geometry_msgs::msg::Twist & command) {
-        if (!tasks_.isPathConfirmed(identity)) {return;}
+        if (!tasks_.isSegmentConfirmed(identity)) {return;}
+        commitApproachingConnector(identity, pose);
         const auto now = TaskManager::Clock::now();
-        const auto event = monitor_->observe(tasks_.path(), identity, pose, command, now);
+        const auto event = monitor_->observe(tasks_.currentSegment()->path, identity, pose, command, now);
         if (event) {handleReplanEvent(*event, now);}
       });
   }
@@ -370,6 +456,53 @@ public:
   }
 
 private:
+  void cancelForEmergency()
+  {
+    emergency_stop_requested_ = false;
+    if (executor_) {executor_->stop("Emergency stop");}
+    tasks_.cancel();
+    worker_->invalidate(tasks_.generation());
+    publishTask();
+  }
+
+  void commitApproachingConnector(SegmentIdentity identity,
+    const geometry_msgs::msg::PoseStamped & pose)
+  {
+    const auto * segment = tasks_.currentSegment();
+    const auto next_index = identity.segment_index + 1;
+    if (!segment || segment->type != topology_global_planner::SegmentType::NORMAL ||
+      next_index >= tasks_.plan().segments.size()) {return;}
+    const auto & next = tasks_.plan().segments[next_index];
+    if (next.type != topology_global_planner::SegmentType::CONNECTOR ||
+      next.wait_pose.header.frame_id != pose.header.frame_id) {return;}
+    const auto & wait = next.wait_pose.pose.position;
+    const auto & exit = next.exit_pose.pose.position;
+    const double dx = exit.x - wait.x, dy = exit.y - wait.y;
+    const double length = std::hypot(dx, dy);
+    if (length <= 1e-6) {return;}
+    const double px = pose.pose.position.x - wait.x, py = pose.pose.position.y - wait.y;
+    const double progress = (px * dx + py * dy) / length;
+    const double lateral = std::abs(px * dy - py * dx) / length;
+    if (progress >= -connector_entry_clearance_ && progress <= length &&
+      lateral <= next.corridor_half_width)
+    {
+      if (!tasks_.commitConnector(next, identity)) {
+        throw std::runtime_error("Cannot commit connector approach to current task");
+      }
+    }
+  }
+
+  void dispatchSegment(bool continuous)
+  {
+    const auto * segment = tasks_.currentSegment();
+    if (!executor_ || !segment) {return;}
+    const auto identity = tasks_.segmentIdentity();
+    monitor_->reset();
+    if (tasks_.beginSegment(identity)) {
+      executor_->acceptSegment(*segment, identity, tasks_.finalSegment(), continuous);
+    }
+  }
+
   void handleReplanEvent(const ReplanEvent & event, TaskManager::Clock::time_point now)
   {
     if (!tasks_.routeInvalid(event, now)) {return;}
@@ -387,7 +520,8 @@ private:
     publishTask();
   }
 
-  void checkPathBlocked(TaskManager::Clock::time_point now)
+  void checkPathBlocked(TaskManager::Clock::time_point now,
+    const geometry_msgs::msg::PoseStamped * pose)
   {
     if (!executor_ || tasks_.state() != TaskState::PATH_READY ||
       executor_->state() != ExecutionState::RUNNING)
@@ -395,8 +529,7 @@ private:
       monitor_->resetBlocked();
       return;
     }
-    geometry_msgs::msg::PoseStamped pose;
-    if (!costmap_->getRobotPose(pose)) {monitor_->resetBlocked(); return;}
+    if (!pose) {monitor_->resetBlocked(); return;}
     std::optional<ReplanEvent> event;
     {
       auto * grid = costmap_->getCostmap();
@@ -406,14 +539,56 @@ private:
       for (const auto & vertex : costmap_->getRobotFootprint()) {
         radius = std::max(radius, std::hypot(vertex.x, vertex.y));
       }
-      event = monitor_->observeBlocked(tasks_.path(), tasks_.identity(), pose, *grid,
+      event = monitor_->observeBlocked(tasks_.currentSegment()->path, tasks_.segmentIdentity(), *pose, *grid,
         costmap_->snapshotStamp().nanoseconds(), radius, now);
     }
     if (event) {handleReplanEvent(*event, now);}
   }
 
+  void updateConnector(const geometry_msgs::msg::PoseStamped * pose, TaskManager::Clock::time_point now)
+  {
+    if (!connector_) {return;}
+    bool valid = pose != nullptr;
+    if (valid) {
+      const auto stamp = rclcpp::Time(pose->header.stamp, get_clock()->get_clock_type());
+      const double age = (get_clock()->now() - stamp).seconds();
+      valid = stamp.nanoseconds() > 0 && age >= -0.1 && age <= connector_pose_timeout_;
+    }
+    if (valid) {connector_->observePose(*pose, now);}
+    else {
+      connector_->localizationLost();
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Connector pose unavailable/stale; retaining pitch command and regions");
+    }
+    if (now >= next_pitch_conflict_check_) {
+      next_pitch_conflict_check_ = now + std::chrono::seconds(5);
+      if (count_publishers("/serial/head_down_cmd") > 1) {
+        RCLCPP_WARN(get_logger(), "Multiple publishers on /serial/head_down_cmd; assign one owner or "
+          "disable connector_executor.enabled to prevent conflicting mechanism commands");
+      }
+    }
+  }
+
   void publishTask()
   {
+    const bool has_plan = !tasks_.plan().segments.empty();
+    if (connector_ && (!connector_plan_identity_ || *connector_plan_identity_ != tasks_.identity() ||
+      connector_has_plan_ != has_plan))
+    {
+      try {
+        connector_->setPlan(tasks_.plan());
+        connector_plan_identity_ = tasks_.identity();
+        connector_has_plan_ = has_plan;
+      } catch (const std::exception & error) {
+        RCLCPP_ERROR(get_logger(), "Connector region update rejected: %s", error.what());
+        if (executor_) {executor_->stop(error.what());}
+        tasks_.executionFailed(tasks_.segmentIdentity(), error.what(), TaskManager::Clock::now());
+        worker_->invalidate(tasks_.generation());
+        connector_->setPlan({});
+        connector_plan_identity_ = tasks_.identity();
+        connector_has_plan_ = false;
+      }
+    }
     if (monitor_ && tasks_.state() != TaskState::PATH_READY) {monitor_->reset();}
     if (executor_ && executor_->state() == ExecutionState::RUNNING &&
       tasks_.state() != TaskState::PATH_READY &&
@@ -421,25 +596,21 @@ private:
     {
       executor_->stop(TaskManager::stateName(tasks_.state()));
     }
-    auto path = tasks_.path();
+    auto path = tasks_.plan().full_path;
     path.header.frame_id = global_frame_;
     path.header.stamp = now();
     path_pub_->publish(path);  // Empty paths revoke obsolete latched paths.
-    std_msgs::msg::String state;
-    state.data = TaskManager::stateName(tasks_.state());
-    state_pub_->publish(state);
-    std_msgs::msg::String error;
-    error.data = tasks_.error();
-    error_pub_->publish(error);
-    state.data = TaskManager::reasonName(tasks_.lastReplanReason());
-    reason_pub_->publish(state);
+    std_msgs::msg::String segment_status;
+    if (const auto * segment = tasks_.currentSegment()) {
+      segment_status.data = std::to_string(tasks_.segmentIdentity().segment_index) + "/" +
+        std::to_string(tasks_.plan().segments.size()) + " " +
+        (segment->type == topology_global_planner::SegmentType::CONNECTOR ? "CONNECTOR " : "NORMAL ") +
+        segment->connector_id + " " + segment->action;
+    }
+    segment_pub_->publish(segment_status);
     std_msgs::msg::UInt64 number;
-    number.data = tasks_.replanCount();
-    count_pub_->publish(number);
     number.data = tasks_.identity().goal_id;
     goal_id_pub_->publish(number);
-    number.data = tasks_.generation();
-    generation_pub_->publish(number);
     if (get_parameter("log_enbaled").as_bool()) {
       RCLCPP_INFO(get_logger(),
         "Task state=%s goal_id=%lu plan_generation=%lu route_replan_count=%lu reason=%s error=%s",
@@ -452,9 +623,23 @@ private:
 
   std::shared_ptr<map_server::CostmapClient> costmap_;
   TaskManager tasks_;
+  std::unique_ptr<ConnectorExecutor> connector_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pitch_pub_;
+  rclcpp::Subscription<referee_msg::msg::Referee>::SharedPtr referee_sub_;
+  std::optional<uint8_t> last_head_status_;
+  std::optional<PlanIdentity> connector_plan_identity_;
+  bool connector_has_plan_{false};
+  double connector_pose_timeout_{0.5};
+  TaskManager::Clock::time_point next_pitch_conflict_check_{};
+  std::atomic<bool> emergency_stop_requested_{false};
+  std::atomic<bool> emergency_latched_{false};
+  std::mutex emergency_mutex_;
+  rclcpp::CallbackGroup::SharedPtr emergency_group_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr emergency_srv_, reset_emergency_srv_;
   std::string global_frame_;
   double planning_timeout_;
   double path_clearance_{0.0};
+  double connector_entry_clearance_{0.0};
   std::atomic<bool> ready_{false};
   map_server::Costmap2D snapshot_;
   rclcpp::Node::SharedPtr planner_node_;
@@ -464,10 +649,8 @@ private:
   std::unique_ptr<PathExecutor> executor_;
   std::unique_ptr<RouteMonitor> monitor_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr error_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr reason_pub_;
-  rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr count_pub_, goal_id_pub_, generation_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr segment_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr goal_id_pub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr cancel_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr replan_srv_;
@@ -492,7 +675,7 @@ int main(int argc, char ** argv)
       nav_executor::costmapClientOptions(params_file, "global_costmap", use_sim_time));
     auto local = std::make_shared<map_server::CostmapClient>("local_costmap_client",
       nav_executor::costmapClientOptions(params_file, "local_costmap", use_sim_time));
-    auto node = std::make_shared<nav_executor::NavExecutor>(global);
+    auto node = std::make_shared<nav_executor::NavExecutor>(global, local);
     node->initializeExecutor(local);
     // Odometry and snapshot receivers can run while the serialized controller
     // is busy. The NavExecutor default group still serializes task/control APIs.

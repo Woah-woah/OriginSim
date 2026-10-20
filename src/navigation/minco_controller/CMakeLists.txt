@@ -3,7 +3,7 @@ project(minco_controller)
 
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
-set(dependencies nav_executor rclcpp map_server geometry_msgs nav_msgs pluginlib
+set(dependencies rclcpp map_server geometry_msgs nav_msgs
   tf2 tf2_ros tf2_geometry_msgs)
 foreach(dependency IN LISTS dependencies)
   find_package(${dependency} REQUIRED)
@@ -32,7 +32,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(minco_controller PRIVATE -O2 -Wall -Wextra -Wpedantic)
 endif()
 
-pluginlib_export_plugin_description_file(nav_executor controller_plugins.xml)
 install(TARGETS minco_mpc_solver minco_controller EXPORT minco_controller_targets
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/minco_controller DESTINATION include)

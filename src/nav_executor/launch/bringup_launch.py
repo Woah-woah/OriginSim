@@ -31,7 +31,6 @@ def generate_launch_description():
     # Get the launch directories
     nav_executor_dir = get_package_share_directory('nav_executor')
     bringup_dir = get_package_share_directory('bringup')
-    planner_dir = get_package_share_directory('topology_global_planner')
 
     # Create the launch configuration variables
     namespace = LaunchConfiguration('namespace')
@@ -61,8 +60,8 @@ def generate_launch_description():
 
     declare_topology_file_cmd = DeclareLaunchArgument(
         'topology_file',
-        default_value=os.path.join(planner_dir, 'config', 'topo.yaml'),
-        description='Full path to the topology map YAML file')
+        default_value='',
+        description='Override TopoPlanner.topology_yaml; empty uses params_file')
 
     declare_use_respawn_cmd = DeclareLaunchArgument(
         'use_respawn', default_value='false',

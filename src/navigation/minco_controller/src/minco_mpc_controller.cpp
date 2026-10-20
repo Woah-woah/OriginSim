@@ -9,7 +9,6 @@
 #include "map_server/costmap_client.hpp"
 #include "map_server/footprint.hpp"
 #include "minco_controller/costmap_cost.hpp"
-#include "pluginlib/class_list_macros.hpp"
 #include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
@@ -241,8 +240,7 @@ void MincoMpcController::checkPrediction(
 }
 
 geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
-  const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & measured_speed,
-  const nav_executor::GoalTolerances & /*tolerances*/)
+  const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & measured_speed)
 {
   const auto node = node_.lock();
   if (!node || !solver_ || trajectory_.empty()) {throw std::logic_error("MPC has no active plan");}
@@ -366,5 +364,3 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   return command;  // Only PathExecutor publishes the command.
 }
 }  // namespace minco_controller
-
-PLUGINLIB_EXPORT_CLASS(minco_controller::MincoMpcController, nav_executor::ControllerPlugin)

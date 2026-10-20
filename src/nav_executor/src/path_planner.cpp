@@ -57,12 +57,12 @@ void PathPlanner::run()
       pending_.reset();
     }
     if (!request) {continue;}
-    PlanningResult result{request->identity, nav_msgs::msg::Path{}, {}};
+    PlanningResult result{request->identity, topology_global_planner::TopologyPlan{}, {}};
     const auto cancel = [this, generation = request->identity.plan_generation]() {
         return stopping_ || generation_ != generation;
       };
     try {
-      if (!cancel()) {result.path = plan_(*request, cancel);}
+      if (!cancel()) {result.plan = plan_(*request, cancel);}
     } catch (const std::exception & exception) {
       result.error = exception.what();
     } catch (...) {

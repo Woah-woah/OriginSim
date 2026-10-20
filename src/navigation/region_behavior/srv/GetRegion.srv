@@ -1,3 +1,0 @@
-geometry_msgs/Point[] locations
----
-int32[] region_ids

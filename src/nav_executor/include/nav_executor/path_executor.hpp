@@ -24,10 +24,10 @@ bool finiteTwist(const geometry_msgs::msg::Twist & speed);
 class PathExecutor
 {
 public:
-  using Failure = std::function<void(PlanIdentity, const std::string &)>;
-  using Success = std::function<void(PlanIdentity)>;
-  using Confirmation = std::function<bool(PlanIdentity)>;
-  using Observation = std::function<void(PlanIdentity,
+  using Failure = std::function<void(SegmentIdentity, const std::string &)>;
+  using Success = std::function<void(SegmentIdentity)>;
+  using Confirmation = std::function<bool(SegmentIdentity)>;
+  using Observation = std::function<void(SegmentIdentity,
       const geometry_msgs::msg::PoseStamped &, const geometry_msgs::msg::Twist &)>;
   PathExecutor(
     const rclcpp::Node::SharedPtr & node,
@@ -37,8 +37,12 @@ public:
   ~PathExecutor();
   PathExecutor(const PathExecutor &) = delete;
   PathExecutor & operator=(const PathExecutor &) = delete;
-  bool acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity);
+  bool acceptSegment(const topology_global_planner::Segment & segment,
+    SegmentIdentity identity, bool final_segment, bool continuous);
   void stop(const std::string & reason);
+  // Thread-safe: latches inhibition and publishes zero without waiting for MPC.
+  void emergencyStop();
+  void clearEmergencyStop();
   ExecutionState state() const;
 
 private:
