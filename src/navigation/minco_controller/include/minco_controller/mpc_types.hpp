@@ -35,6 +35,25 @@ struct ReferencePoint
   double yaw_rate{0.0};           // 参考角速度(前馈)
 };
 
+// Supporting half-plane outside a lethal cell expanded by the collision radius.
+struct SafetyPlane
+{
+  Eigen::Vector2d normal{0.0, 0.0};
+  double offset{0.0};  // normal.dot(position) >= offset
+  // Applied to p_i + preview_time*u_i + origin_offset (global XY).
+  double preview_time{0.0};
+  Eigen::Vector2d origin_offset{0.0, 0.0};
+};
+
+// C(p) ~= cost + gradient.dot(p - position), in the Costmap global frame.
+struct CostLinearization
+{
+  Eigen::Vector2d position{0.0, 0.0};
+  double cost{0.0};
+  Eigen::Vector2d gradient{0.0, 0.0};
+  std::vector<SafetyPlane> safety_planes;
+};
+
 // MPC 配置
 struct MPCConfig
 {
@@ -52,6 +71,8 @@ struct MPCConfig
   double q_along{3.0};   // weight along heading (lower → timing flexibility)
   double q_cross{12.0};  // weight cross-track (higher → precision)
   Eigen::Vector3d R{1.0, 1.0, 0.5};
+  // PSD penalty on u0 - previous accepted command and uk - u(k-1).
+  Eigen::Vector3d control_delta_weight{2.0, 2.0, 0.5};
 
   // 速度约束（作用在 map/global 速度变量上）
   double vx_min{-1.0};
@@ -69,6 +90,14 @@ struct MPCConfig
   double ay_max{2.0};
   double alpha_min{-4.0};
   double alpha_max{4.0};
+
+  // Squared normalized Costmap residual, linearized outside qpOASES.
+  double obstacle_weight{30.0};
+  double obstacle_trust_region{0.15};  // metres, per predicted x/y
+  int obstacle_iterations{3};
+  // Reserve clearance for the measured-velocity delay projection at the next cycle.
+  double safety_preview_time{0.0};
+  double control_period{0.05};
 
   // qpOASES 求解器参数
   int max_working_set_recalculations{200};

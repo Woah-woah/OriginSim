@@ -24,7 +24,7 @@ dynamic_map:
     roi:
       min_radius: 0.4
       max_radius: 8.0
-      min_z: 0.0                 # 相对机器人原点，沿 tracking_frame 的竖直轴
+      min_z: 0.0                   # 相对机器人原点，沿 tracking_frame 的竖直轴
       max_z: 0.8
     voxel_size: 0.03
     static_voxel_size: 0.05
@@ -124,7 +124,7 @@ nav_executor:
     odom_timeout: 0.5
     tf_timeout: 0.5
     control_timeout: 0.2
-    xy_goal_tolerance: 0.5
+    xy_goal_tolerance: 0.3
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
     route_monitor:
@@ -212,8 +212,14 @@ nav_executor:
       horizon: 25
       Q: [5.0, 5.0, 2.0]
       R: [1.0, 1.0, 0.5]
+      control_delta_weight: [2.0, 2.0, 0.5]
       q_along: 3.0
       q_cross: 12.0
+      # w * C_linearized(x,y)^2; sequential convex QPs, metres for distances.
+      obstacle_weight: 30.0
+      obstacle_smoothing_distance: 0.2
+      obstacle_trust_region: 0.15
+      obstacle_iterations: 3
       vx_min: -1.7
       vx_max: 1.7
       vy_min: -1.7

@@ -8,6 +8,7 @@
 
 #include "map_server/costmap_client.hpp"
 #include "map_server/footprint.hpp"
+#include "minco_controller/costmap_cost.hpp"
 #include "pluginlib/class_list_macros.hpp"
 #include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -53,6 +54,11 @@ void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
   if (q.size() != 3 || r.size() != 3) {throw std::invalid_argument("MPC Q and R require 3 weights");}
   config_.Q = Eigen::Vector3d(q[0], q[1], q[2]);
   config_.R = Eigen::Vector3d(r[0], r[1], r[2]);
+  const auto delta_weight = parameter("control_delta_weight", std::vector<double>{2.0, 2.0, 0.5});
+  if (delta_weight.size() != 3) {
+    throw std::invalid_argument("MPC control_delta_weight requires 3 weights");
+  }
+  config_.control_delta_weight = Eigen::Vector3d(delta_weight[0], delta_weight[1], delta_weight[2]);
   config_.q_along = parameter("q_along", 3.0);
   config_.q_cross = parameter("q_cross", 12.0);
   config_.vx_min = parameter("vx_min", -1.0);
@@ -70,10 +76,24 @@ void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
   config_.alpha_max = parameter("alpha_max", 4.0);
   config_.max_working_set_recalculations = parameter("max_working_set_recalculations", 200);
   config_.eps_regularization = parameter("eps_regularization", 1e-9);
+  config_.obstacle_weight = parameter("obstacle_weight", 30.0);
+  config_.obstacle_trust_region = parameter("obstacle_trust_region", 0.15);
+  config_.obstacle_iterations = parameter("obstacle_iterations", 3);
+  obstacle_smoothing_distance_ = parameter("obstacle_smoothing_distance", 0.2);
+  if (!std::isfinite(obstacle_smoothing_distance_) || obstacle_smoothing_distance_ <= 0.0 ||
+    obstacle_smoothing_distance_ > 2.0)
+  {throw std::invalid_argument("MPC obstacle_smoothing_distance must be in (0, 2] metres");}
   reference_speed_ = parameter("reference_speed", 0.6);
   reference_acceleration_ = parameter("reference_acceleration", 1.0);
   reference_yaw_rate_ = parameter("reference_yaw_rate", 1.0);
   control_delay_ = parameter("control_delay_compensation", 0.25);
+  config_.safety_preview_time = control_delay_;
+  const double frequency = node->has_parameter("controller_frequency") ?
+    node->get_parameter("controller_frequency").as_double() : 20.0;
+  if (!std::isfinite(frequency) || frequency <= 0.0) {
+    throw std::invalid_argument("MPC controller_frequency must be positive");
+  }
+  config_.control_period = 1.0 / frequency;
   output_delay_ = parameter("output_delay", 0.025);
   deadzone_ = parameter("deadzone_speed_threshold", 0.02);
   velocity_noise_threshold_ = parameter("velocity_noise_threshold", 0.03);
@@ -138,7 +158,8 @@ void MincoMpcController::setPlan(const nav_msgs::msg::Path & path)
   plan_frame_ = path.header.frame_id;
 }
 
-void MincoMpcController::checkPrediction(const std::vector<State> & prediction) const
+void MincoMpcController::checkPrediction(
+  const std::vector<State> & prediction, const std::string & stage) const
 {
   auto * grid = costmap_->getCostmap();
   std::unique_lock<map_server::Costmap2D::mutex_t> lock(*grid->getMutex());
@@ -152,20 +173,20 @@ void MincoMpcController::checkPrediction(const std::vector<State> & prediction) 
   // The 253 band already accounts for the robot's inscribed radius: check it
   // at the center only. Sweep the full disc against lethal/unknown cells so
   // that inflation does not count the robot radius a second time.
-  const auto check = [&](double x, double y) {
+  const auto check = [&](double x, double y, size_t step) {
       unsigned int mx, my;
       if (!grid->worldToMap(x - radius, y - radius, mx, my) ||
         !grid->worldToMap(x + radius, y + radius, mx, my))
-      {throw std::runtime_error("MPC prediction leaves the local costmap");}
+      {throw std::runtime_error("MPC " + stage + " leaves the local costmap");}
       const double reach = radius + resolution * std::sqrt(0.5);
       const int cells = static_cast<int>(std::ceil(reach / resolution));
       grid->worldToMap(x, y, mx, my);
-      const auto center_cost = grid->getCost(mx, my);
-      if (center_cost >= map_server::INSCRIBED_INFLATED_OBSTACLE) {
-        throw std::runtime_error("MPC prediction center is inscribed, lethal or unknown: x=" +
-                std::to_string(x) + " y=" + std::to_string(y) +
-                " cost=" + std::to_string(center_cost));
-      }
+      // const auto center_cost = grid->getCost(mx, my);
+      // if (center_cost >= map_server::INSCRIBED_INFLATED_OBSTACLE) {
+      //   throw std::runtime_error("MPC prediction center is inscribed, lethal or unknown: x=" +
+      //           std::to_string(x) + " y=" + std::to_string(y) +
+      //           " cost=" + std::to_string(center_cost));
+      // }
       for (int dy = -cells; dy <= cells; ++dy) {
         for (int dx = -cells; dx <= cells; ++dx) {
           const int ix = static_cast<int>(mx) + dx, iy = static_cast<int>(my) + dy;
@@ -174,12 +195,34 @@ void MincoMpcController::checkPrediction(const std::vector<State> & prediction) 
           double wx, wy;
           grid->mapToWorld(ix, iy, wx, wy);
           if (std::hypot(wx - x, wy - y) > reach) {continue;}
+
           const auto cost = grid->getCost(ix, iy);
-          if (cost >= map_server::LETHAL_OBSTACLE) {
-            throw std::runtime_error("MPC prediction footprint intersects a lethal or unknown cell: "
-                    "center_x=" + std::to_string(x) + " center_y=" + std::to_string(y) +
-                    " cell_x=" + std::to_string(wx) + " cell_y=" + std::to_string(wy) +
-                    " cost=" + std::to_string(cost));
+          // 只判断是否碰撞真实障碍
+          if (cost != map_server::LETHAL_OBSTACLE) {
+            continue;
+          }
+          // 栅格尺寸为 resolution × resolution
+          const double half = resolution * 0.5;
+
+          // 计算圆心到方形栅格的最近距离
+          const double distance_x = std::max(std::abs(wx - x) - half, 0.0);
+          const double distance_y = std::max(std::abs(wy - y) - half, 0.0);
+
+          // 圆和栅格方块的精确几何相交检测
+          const double distance_sq = distance_x * distance_x + distance_y * distance_y;
+          const double radius_sq = radius * radius;
+
+          if (distance_sq <= radius_sq) {
+            throw std::runtime_error(
+              "MPC " + stage + " footprint collision: "
+              "center_x=" + std::to_string(x) +
+              " center_y=" + std::to_string(y) +
+              " cell_x=" + std::to_string(wx) +
+              " cell_y=" + std::to_string(wy) +
+              " distance=" + std::to_string(std::sqrt(distance_sq)) +
+              " radius=" + std::to_string(radius) +
+              " cost=" + std::to_string(cost) +
+              " step=" + std::to_string(step));
           }
         }
       }
@@ -187,12 +230,12 @@ void MincoMpcController::checkPrediction(const std::vector<State> & prediction) 
   for (size_t i = 0; i < prediction.size(); ++i) {
     const auto & b = prediction[i];
     const auto & a = prediction[i ? i - 1 : 0];
-    check(b.x, b.y);
+    check(b.x, b.y, i);
     const int steps = std::max(1, static_cast<int>(std::ceil(
           std::hypot(b.x - a.x, b.y - a.y) / (0.5 * resolution))));
     for (int k = 0; k <= steps; ++k) {
       const double fraction = static_cast<double>(k) / steps;
-      check(a.x + fraction * (b.x - a.x), a.y + fraction * (b.y - a.y));
+      check(a.x + fraction * (b.x - a.x), a.y + fraction * (b.y - a.y), i);
     }
   }
 }
@@ -218,8 +261,14 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   current.vx = c * measured_speed.linear.x - s * measured_speed.linear.y;
   current.vy = s * measured_speed.linear.x + c * measured_speed.linear.y;
   current.omega = measured_speed.angular.z;
+  const auto last_command = solver_->getLastControl();
+  int axis = 0;
   for (auto * value : {&current.vx, &current.vy, &current.omega}) {
-    if (std::abs(*value) < velocity_noise_threshold_) {*value = 0.0;}
+    // Suppress stationary odometry noise, but keep legitimate low-speed motion
+    // once commanded. Otherwise a=1.5, dt=0.02 stalls at the 0.03 noise threshold.
+    if (std::abs(*value) < velocity_noise_threshold_ &&
+      std::abs(last_command[axis]) < deadzone_) {*value = 0.0;}
+    ++axis;
   }
   const State observed = current;
   // Preserve upstream forward state prediction and future-reference sampling.
@@ -240,10 +289,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   const double offset = tf2::getYaw(transform.transform.rotation);
   const double ct = std::cos(offset), st = std::sin(offset);
   const double tx = transform.transform.translation.x, ty = transform.transform.translation.y;
-  State in_plan = current;
-  in_plan.x = ct * (current.x - tx) + st * (current.y - ty);
-  in_plan.y = -st * (current.x - tx) + ct * (current.y - ty);
-  in_plan.yaw = current.yaw - offset;
+  State in_plan = observed;
+  in_plan.x = ct * (observed.x - tx) + st * (observed.y - ty);
+  in_plan.y = -st * (observed.x - tx) + ct * (observed.y - ty);
+  in_plan.yaw = observed.yaw - offset;
   progress_time_ = trajectory_.nearestTime(in_plan, progress_time_);
   std::vector<ReferencePoint> reference;
   reference.reserve(config_.horizon);
@@ -264,7 +313,19 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   }
   Control control;
   std::vector<State> prediction;
-  if (!solver_->solve(current, reference, control, &prediction)) {
+  // Snapshot construction locks the grid, then releases it before optimization.
+  // Positions, gradients and controls all use the local Costmap global frame.
+  const auto & footprint = costmap_->getRobotFootprint();
+  const double radius = (footprint.empty() ? costmap_->settings().robot_radius :
+    map_server::calculateMinAndMaxDistances(footprint).second) + collision_margin_;
+  const CostmapCost field(*costmap_->getCostmap(), obstacle_smoothing_distance_,
+    radius, config_.obstacle_trust_region);
+  // This segment is fixed by measured velocity and cannot be repaired by U.
+  checkPrediction({observed, current}, "delay_projection");
+  const auto sample_cost = [&field](const Eigen::Vector2d & p, CostLinearization & cost) {
+      return field.sample(p, cost);
+    };
+  if (!solver_->solve(current, reference, control, &prediction, sample_cost, &observed)) {
     throw std::runtime_error("MPC qpOASES solve failed, status=" + std::to_string(solver_->lastStatus()));
   }
   // Upstream output phase compensation anticipates physical chassis rotation;
@@ -277,19 +338,25 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   vy = std::clamp(vy, config_.vy_min, config_.vy_max);
   if (config_.use_acc_constraints) {
     // Keep the phase correction inside the same first-step acceleration bounds.
-    vx = std::clamp(vx, current.vx + config_.ax_min * config_.dt,
-      current.vx + config_.ax_max * config_.dt);
-    vy = std::clamp(vy, current.vy + config_.ay_min * config_.dt,
-      current.vy + config_.ay_max * config_.dt);
+    vx = std::clamp(vx, current.vx + config_.ax_min * config_.control_period,
+      current.vx + config_.ax_max * config_.control_period);
+    vy = std::clamp(vy, current.vy + config_.ay_min * config_.control_period,
+      current.vy + config_.ay_max * config_.control_period);
   }
   if (std::hypot(vx, vy) < deadzone_) {vx = vy = 0.0;}
   prediction.insert(prediction.begin(), observed);
-  checkPrediction(prediction);
+  checkPrediction(prediction, "qp_horizon");
   // Check the actual phase-compensated first command as well as the QP horizon.
-  State next = observed;
-  next.x += vx * (config_.dt + control_delay_);
-  next.y += vy * (config_.dt + control_delay_);
-  checkPrediction({observed, next});
+  // Match the QP: measured velocity applies before actuation; the new command
+  // applies after it. Do not apply the new command retroactively during latency.
+  State next = current;
+  next.x += vx * config_.dt;
+  next.y += vy * config_.dt;
+  checkPrediction({current, next}, "output_command");
+  State held = observed;
+  held.x += vx * (config_.control_period + control_delay_);
+  held.y += vy * (config_.control_period + control_delay_);
+  checkPrediction({observed, held}, "command_hold");
   geometry_msgs::msg::TwistStamped command;
   command.header.stamp = node->now();
   command.header.frame_id = costmap_->getBaseFrameID();

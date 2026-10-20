@@ -1,6 +1,7 @@
 #include "nav_executor/path_executor.hpp"
 
 #include <cmath>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -140,21 +141,30 @@ public:
     }
     controller_ = controllers_.at(selected);
     RCLCPP_INFO(logger_, "Selected controller: %s", selected.c_str());
+    // Keep input reception independent of an overdue control timer. All task
+    // and controller mutations remain in the node's default callback group.
+    odom_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    rclcpp::SubscriptionOptions odom_options;
+    odom_options.callback_group = odom_group_;
     odom_sub_ = node->create_subscription<nav_msgs::msg::Odometry>(
       odom_topic, rclcpp::SensorDataQoS().keep_last(1),
       [this](nav_msgs::msg::Odometry::ConstSharedPtr msg) {
-        const auto stamp = rclcpp::Time(msg->header.stamp, clock_->get_clock_type());
-        if (msg->child_frame_id.empty() || stamp.nanoseconds() <= 0 ||
-          !finiteTwist(msg->twist.twist) ||
-          (odom_ && stamp < rclcpp::Time(odom_->header.stamp, clock_->get_clock_type())))
-        {
+        std::lock_guard<std::mutex> lock(odom_mutex_);
+        try {
+          const auto stamp = rclcpp::Time(msg->header.stamp, clock_->get_clock_type());
+          if (msg->child_frame_id.empty() || stamp.nanoseconds() <= 0 ||
+            !finiteTwist(msg->twist.twist) ||
+            (odom_ && stamp < rclcpp::Time(odom_->header.stamp, clock_->get_clock_type())))
+          {throw std::invalid_argument("Invalid or out-of-order odometry");}
+          odom_ = *msg;
+          odom_received_ = TaskManager::Clock::now();
+        } catch (const std::exception & exception) {
           odom_.reset();
-          fail("Invalid or out-of-order odometry");
-          return;
+          // Defer failure/reset to the serialized control callback. Never call
+          // TaskManager or reset a controller from the receiver's thread.
+          odom_error_ = exception.what();
         }
-        odom_ = *msg;
-        odom_received_ = TaskManager::Clock::now();
-      });
+      }, odom_options);
     timer_ = node->create_wall_timer(std::chrono::duration<double>(1.0 / frequency_),
       [this]() {tick();});
     setState(ExecutionState::IDLE, "");
@@ -240,30 +250,55 @@ public:
   {
     const rclcpp::Time time(stamp, clock_->get_clock_type());
     if (allow_zero && time.nanoseconds() == 0) {return;}  // Static TF is timeless.
-    const double age = (clock_->now() - time).seconds();
+    const auto now = clock_->now();
+    const double age = (now - time).seconds();
     if (time.nanoseconds() <= 0 || age > timeout || age < -0.1) {
-      throw std::runtime_error(description + " timestamp is stale or invalid");
+      throw std::runtime_error(description + " timestamp is stale or invalid: age=" +
+              std::to_string(age) + "s timeout=" + std::to_string(timeout) +
+              "s now=" + std::to_string(now.seconds()) + " stamp=" +
+              std::to_string(time.seconds()));
     }
   }
 
-  geometry_msgs::msg::Twist readSpeed()
+  geometry_msgs::msg::Twist readSpeed(const std::string & phase = "before_controller")
   {
-    if (!odom_ || std::chrono::duration<double>(TaskManager::Clock::now() -
-        odom_received_).count() > odom_timeout_)
+    std::optional<nav_msgs::msg::Odometry> odom;
+    TaskManager::Clock::time_point received;
+    {
+      std::lock_guard<std::mutex> lock(odom_mutex_);
+      if (!odom_error_.empty()) {
+        const auto error = std::exchange(odom_error_, std::string{});
+        throw std::runtime_error(error);
+      }
+      odom = odom_;
+      received = odom_received_;
+    }
+    if (!odom || std::chrono::duration<double>(TaskManager::Clock::now() -
+        received).count() > odom_timeout_)
     {
       throw std::runtime_error("Odometry missing or receive timeout");
     }
-    checkStamp(odom_->header.stamp, odom_timeout_, "Odometry");
-    if (odom_->child_frame_id == costmap_->getBaseFrameID()) {return odom_->twist.twist;}
+    try {
+      checkStamp(odom->header.stamp, odom_timeout_, "Odometry");
+    } catch (const std::runtime_error & exception) {
+      throw std::runtime_error(std::string(exception.what()) + " phase=" + phase +
+              " receive_age=" + std::to_string(std::chrono::duration<double>(
+                TaskManager::Clock::now() - received).count()) + "s");
+    }
+    if (odom->child_frame_id == costmap_->getBaseFrameID()) {return odom->twist.twist;}
     const auto transform = costmap_->getTfBuffer()->lookupTransform(
-      costmap_->getBaseFrameID(), odom_->child_frame_id, odom_->header.stamp,
-      rclcpp::Duration::from_seconds(0.0));
-    return transformRobotVelocity(odom_->twist.twist, transform);
+      costmap_->getBaseFrameID(), odom->child_frame_id,
+      tf2::TimePointZero);
+    return transformRobotVelocity(odom->twist.twist, transform);
   }
 
   void tick()
   {
-    if (!path_) {publishZero(); return;}
+    if (!path_) {
+      {std::lock_guard<std::mutex> lock(odom_mutex_); odom_error_.clear();}
+      publishZero();
+      return;
+    }
     if (!confirmation_(identity_)) {stop("TaskManager revoked execution path"); return;}
     try {
       if (!global_ready_() || !costmap_->isCurrent()) {
@@ -320,7 +355,7 @@ public:
       // Inputs can expire during a long computation. Recheck before publishing.
       checkStamp(pose.header.stamp, tf_timeout_, "Robot TF", true);
       checkStamp(path_tf.header.stamp, tf_timeout_, "Path TF", true);
-      readSpeed();
+      readSpeed("after_controller");
       if (!global_ready_() || !costmap_->isCurrent()) {
         throw std::runtime_error("Costmap invalidated during controller computation");
       }
@@ -359,7 +394,10 @@ public:
   std::unordered_map<std::string, std::shared_ptr<ControllerPlugin>> controllers_;
   std::shared_ptr<ControllerPlugin> controller_;
   std::optional<nav_msgs::msg::Path> path_;
+  std::mutex odom_mutex_;
   std::optional<nav_msgs::msg::Odometry> odom_;
+  std::string odom_error_;
+  rclcpp::CallbackGroup::SharedPtr odom_group_;
   TaskManager::Clock::time_point odom_received_{};
   PlanIdentity identity_;
   ExecutionState state_{ExecutionState::IDLE};

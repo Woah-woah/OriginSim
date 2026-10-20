@@ -18,8 +18,9 @@ geometry_msgs::msg::Twist transformRobotVelocity(
   const geometry_msgs::msg::TransformStamped & base_from_child);
 bool finiteTwist(const geometry_msgs::msg::Twist & speed);
 
-// Peer of PathPlanner. All public methods and control ticks run on the same
-// mutually exclusive ROS executor; costmap activation alone runs asynchronously.
+// Peer of PathPlanner. Public methods and control ticks share the node's
+// mutually exclusive callback group. Odometry reception and Costmap activation
+// run independently; the odometry snapshot is protected by a mutex.
 class PathExecutor
 {
 public:

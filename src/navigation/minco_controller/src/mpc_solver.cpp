@@ -24,11 +24,17 @@ void MpcSolver::setConfig(const MPCConfig & config)
   if (!std::isfinite(config.dt) || config.dt <= 0.0 ||
     config.horizon < 1 || config.horizon > 100 ||
     !config.Q.allFinite() || (config.Q.array() < 0.0).any() ||
+    !config.control_delta_weight.allFinite() || (config.control_delta_weight.array() < 0.0).any() ||
     !config.R.allFinite() || (config.R.array() <= 0.0).any() ||
     !std::isfinite(config.q_along) || config.q_along < 0.0 ||
     !std::isfinite(config.q_cross) || config.q_cross < 0.0 ||
     !std::isfinite(config.eps_regularization) || config.eps_regularization <= 0.0 ||
-    config.max_working_set_recalculations <= 0)
+    config.max_working_set_recalculations <= 0 ||
+    !std::isfinite(config.obstacle_weight) || config.obstacle_weight < 0.0 ||
+    !std::isfinite(config.obstacle_trust_region) || config.obstacle_trust_region <= 0.0 ||
+    !std::isfinite(config.control_period) || config.control_period <= 0.0 ||
+    !std::isfinite(config.safety_preview_time) || config.safety_preview_time < 0.0 ||
+    config.obstacle_iterations < 1 || config.obstacle_iterations > 10)
   {throw std::invalid_argument("Invalid MPC discretization, weights or QP settings");}
   for (const auto & bounds : {std::pair{config.vx_min, config.vx_max},
     std::pair{config.vy_min, config.vy_max}, std::pair{config.omega_min, config.omega_max},
@@ -64,6 +70,7 @@ void MpcSolver::buildStepModel(
 
 bool MpcSolver::buildCondensedQP(const State & curr,
   const std::vector<ReferencePoint> & ref_traj,
+  const std::vector<CostLinearization> & costs,
   Eigen::MatrixXd & H,
   Eigen::VectorXd & g,
   Eigen::VectorXd & lb,
@@ -175,6 +182,35 @@ bool MpcSolver::buildCondensedQP(const State & curr,
   // g = 2*(B^T Q d - R U_ref)
   g = 2.0 * (B_hat.transpose() * Q_bar * d - R_bar * U_ref);
 
+  // Smooth accepted commands in the QP. The anchor is frozen for every
+  // sequential obstacle solve; an intermediate QP must not become u_previous.
+  const Eigen::Vector3d previous = has_last_u_ ? last_u_global_ :
+    Eigen::Vector3d(curr.vx, curr.vy, curr.omega);
+  for (int k = 0; k < N; ++k) {
+    for (int axis = 0; axis < 3; ++axis) {
+      const int col = 3 * k + axis;
+      const double weight = config_.control_delta_weight[axis];
+      H(col, col) += 2.0 * weight;
+      if (k == 0) {
+        g(col) -= 2.0 * weight * previous[axis];
+      } else {
+        H(col - 3, col - 3) += 2.0 * weight;
+        H(col, col - 3) -= 2.0 * weight;
+        H(col - 3, col) -= 2.0 * weight;
+      }
+    }
+  }
+
+  // p_i = p0 + B_xy U. Squaring the affine cost residual adds a PSD
+  // Gauss-Newton Hessian 2*w*a*a^T; no map queries occur inside the QP.
+  for (int i = 0; i < static_cast<int>(costs.size()); ++i) {
+    const auto & cost = costs[i];
+    const Eigen::RowVectorXd a = cost.gradient.transpose() * B_hat.block(i * nx, 0, 2, nU);
+    const double b = cost.cost + cost.gradient.dot(x0.head<2>() - cost.position);
+    H.noalias() += 2.0 * config_.obstacle_weight * a.transpose() * a;
+    g.noalias() += 2.0 * config_.obstacle_weight * b * a.transpose();
+  }
+
   // 变量边界（速度约束，map/global 系）
   // Use -1e12 instead of -inf: qpOASES defines INFTY=1e20 internally.
   // IEEE -inf causes NaN in active-set arithmetic.
@@ -190,25 +226,28 @@ bool MpcSolver::buildCondensedQP(const State & curr,
   }
 
   // 加速度约束（可选）：a_min <= (v_k - v_{k-1})/dt <= a_max
-  if (!config_.use_acc_constraints) {
+  if (!config_.use_acc_constraints && costs.empty()) {
     A_con.resize(0, 0);
     lbA.resize(0);
     ubA.resize(0);
     return true;
   }
 
-  const int nC = 3 * N;  // 对每个 k 对每个轴各一个差分约束：v_k - v_{k-1}
+  const int nAcc = config_.use_acc_constraints ? 3 * N : 0;
+  int nSafety = 0;
+  for (const auto & cost : costs) {nSafety += static_cast<int>(cost.safety_planes.size());}
+  const int nC = nAcc + 2 * static_cast<int>(costs.size()) + nSafety;
   A_con = Eigen::MatrixXd::Zero(nC, nU);
   lbA = Eigen::VectorXd::Zero(nC);
   ubA = Eigen::VectorXd::Zero(nC);
 
-  const double last_vx = last_u_global_.x();
-  const double last_vy = last_u_global_.y();
-  const double last_w = last_u_global_.z();
+  const double last_vx = curr.vx;
+  const double last_vy = curr.vy;
+  const double last_w = curr.omega;
 
   // 约束形式：lbA <= A_con * U <= ubA
   // 这里 A_con * U 直接表示 (v_k - v_{k-1})，再用 bounds 限制到 [a_min*dt, a_max*dt]
-  for (int k = 0; k < N; ++k) {
+  for (int k = 0; k < nAcc / 3; ++k) {
     for (int axis = 0; axis < 3; ++axis) {
       const int row = k * 3 + axis;
       const int col_curr = k * 3 + axis;
@@ -220,10 +259,10 @@ bool MpcSolver::buildCondensedQP(const State & curr,
         // a_min*dt <= v0 - v_curr_global <= a_max*dt
         const double last = (axis == 0 ? last_vx : (axis == 1 ? last_vy : last_w));
         lbA(row) =
-          (axis == 0 ? config_.ax_min : (axis == 1 ? config_.ay_min : config_.alpha_min)) * config_.dt +
+          (axis == 0 ? config_.ax_min : (axis == 1 ? config_.ay_min : config_.alpha_min)) * config_.control_period +
           last;
         ubA(row) =
-          (axis == 0 ? config_.ax_max : (axis == 1 ? config_.ay_max : config_.alpha_max)) * config_.dt +
+          (axis == 0 ? config_.ax_max : (axis == 1 ? config_.ay_max : config_.alpha_max)) * config_.control_period +
           last;
       } else {
         const int col_prev = (k - 1) * 3 + axis;
@@ -236,13 +275,164 @@ bool MpcSolver::buildCondensedQP(const State & curr,
     }
   }
 
+  for (int i = 0; i < static_cast<int>(costs.size()); ++i) {
+    const int row = nAcc + 2 * i;
+    A_con.block(row, 0, 2, nU) = B_hat.block(i * nx, 0, 2, nU);
+    lbA.segment<2>(row) = costs[i].position - x0.head<2>() -
+      Eigen::Vector2d::Constant(config_.obstacle_trust_region);
+    ubA.segment<2>(row) = costs[i].position - x0.head<2>() +
+      Eigen::Vector2d::Constant(config_.obstacle_trust_region);
+  }
+  int row = nAcc + 2 * static_cast<int>(costs.size());
+  for (int i = 0; i < static_cast<int>(costs.size()); ++i) {
+    for (const auto & plane : costs[i].safety_planes) {
+      A_con.row(row) = plane.normal.transpose() * B_hat.block(i * nx, 0, 2, nU);
+      A_con.block<1, 2>(row, i * nu) += plane.preview_time * plane.normal.transpose();
+      lbA(row) = plane.offset - plane.normal.dot(x0.head<2>() + plane.origin_offset);
+      ubA(row) = 1e12;
+      ++row;
+    }
+  }
   return true;
 }
 
 bool MpcSolver::solve(const State & curr,
   const std::vector<ReferencePoint> & ref_traj,
   Control & out_u,
-  std::vector<State> * out_pred)
+  std::vector<State> * out_pred, const CostSampler & sample_cost, const State * observed)
+{
+  out_u = Control{};
+  if (out_pred) {out_pred->clear();}
+  if (observed && !Eigen::Vector2d(observed->x, observed->y).allFinite()) {
+    last_status_ = -1;
+    return false;
+  }
+  const Eigen::Vector3d previous_command = has_last_u_ ? last_u_global_ :
+    Eigen::Vector3d(curr.vx, curr.vy, curr.omega);
+  Control best_control;
+  std::vector<State> best;
+  if (!solveOnce(curr, ref_traj, {}, best_control, &best)) {return false;}
+  if (sample_cost) {
+    // The planned corridor can have unavoidable inflation cost on both sides.
+    // Penalize excess over its reference cost, otherwise entering a traversable
+    // narrow door creates a forward potential barrier and the robot stalls.
+    std::vector<double> reference_cost(config_.horizon, 0.0);
+    for (int i = 0; i < config_.horizon; ++i) {
+      CostLinearization sample;
+      if (sample_cost(ref_traj[i].pos, sample) && std::isfinite(sample.cost) && sample.cost >= 0.0) {
+        reference_cost[i] = sample.cost;
+      }
+    }
+    // Accept only decreases of the actual sampled objective, preventing an
+    // inaccurate local approximation from increasing obstacle/tracking cost.
+    const auto evaluate = [&](const std::vector<State> & prediction,
+      std::vector<CostLinearization> & costs, double & objective) {
+        objective = 0.0;
+        costs.clear();
+        for (int i = 0; i < config_.horizon; ++i) {
+          const auto & state = prediction[i + 1];
+          const auto & ref = ref_traj[i];
+          CostLinearization cost;
+          cost.position = Eigen::Vector2d(state.x, state.y);
+          if (!sample_cost(cost.position, cost) || !std::isfinite(cost.cost) ||
+            cost.cost < 0.0 || !cost.gradient.allFinite()) {return false;}
+          cost.position = Eigen::Vector2d(state.x, state.y);
+          const double excess = cost.cost - reference_cost[i];
+          cost.cost = std::max(0.0, excess);
+          if (excess <= 0.0) {cost.gradient.setZero();}
+          if (i == 0 && observed && !cost.safety_planes.empty()) {
+            // The next measured pose starts at observed, not at the delayed
+            // solver initial state. Bound the whole command hold + latency
+            // sweep in this frame, so the next delay projection remains safe.
+            const Eigen::Vector2d origin(observed->x, observed->y);
+            const Eigen::Vector2d velocity(state.vx, state.vy);
+            const double hold = config_.control_period + config_.safety_preview_time;
+            const int samples = std::max(1, static_cast<int>(std::ceil(
+              hold * velocity.norm() / 0.02)));
+            for (int k = 1; k <= samples; ++k) {
+              const double time = hold * k / samples;
+              CostLinearization preview;
+              if (!sample_cost(origin + time * velocity, preview)) {return false;}
+              for (auto plane : preview.safety_planes) {
+                plane.preview_time = time - config_.dt;
+                plane.origin_offset = origin - Eigen::Vector2d(curr.x, curr.y);
+                cost.safety_planes.push_back(plane);
+              }
+            }
+          }
+          for (const auto & plane : cost.safety_planes) {
+            if (!plane.normal.allFinite() || plane.normal.squaredNorm() < 1e-12 ||
+              !std::isfinite(plane.offset) || !std::isfinite(plane.preview_time) ||
+              !plane.origin_offset.allFinite()) {return false;}
+          }
+          costs.push_back(cost);
+          const Eigen::Vector2d error = cost.position - ref.pos;
+          const double along = std::cos(ref.yaw) * error.x() + std::sin(ref.yaw) * error.y();
+          const double cross = -std::sin(ref.yaw) * error.x() + std::cos(ref.yaw) * error.y();
+          const Eigen::Vector3d du(state.vx - ref.vel.x(), state.vy - ref.vel.y(),
+            state.omega - ref.yaw_rate);
+          const auto & prior = prediction[i];
+          const Eigen::Vector3d delta_u = Eigen::Vector3d(state.vx, state.vy, state.omega) -
+            (i == 0 ? previous_command : Eigen::Vector3d(prior.vx, prior.vy, prior.omega));
+          objective += delta_u.dot(config_.control_delta_weight.asDiagonal() * delta_u);
+          objective += config_.q_along * along * along + config_.q_cross * cross * cross +
+            config_.Q.z() * std::pow(state.yaw - ref.yaw, 2) +
+            du.dot(config_.R.asDiagonal() * du) + config_.obstacle_weight * cost.cost * cost.cost;
+        }
+        return std::isfinite(objective);
+      };
+    const auto safe = [&](const std::vector<State> & prediction,
+      const std::vector<CostLinearization> & costs) {
+        for (int i = 0; i < config_.horizon; ++i) {
+          const auto & state = prediction[i + 1];
+          const Eigen::Vector2d position(state.x, state.y);
+          for (const auto & plane : costs[i].safety_planes) {
+            const Eigen::Vector2d point = position +
+              plane.preview_time * Eigen::Vector2d(state.vx, state.vy) + plane.origin_offset;
+            if (plane.normal.dot(point) < plane.offset - 1e-7) {return false;}
+          }
+        }
+        return true;
+      };
+    std::vector<CostLinearization> costs;
+    double best_value;
+    if (!evaluate(best, costs, best_value)) {last_status_ = -2; return false;}
+    for (int iteration = 0; iteration < config_.obstacle_iterations; ++iteration) {
+      Control candidate_control;
+      std::vector<State> candidate;
+      const bool best_is_safe = safe(best, costs);
+      if (!solveOnce(curr, ref_traj, costs, candidate_control, &candidate)) {
+        if (best_is_safe) {last_status_ = 0; break;}
+        return false;
+      }
+      std::vector<CostLinearization> candidate_costs;
+      double value;
+      if (!evaluate(candidate, candidate_costs, value)) {
+        if (best_is_safe) {last_status_ = 0; break;}
+        last_status_ = -2;
+        return false;
+      }
+      // Hard clearance takes priority over the soft objective. Never retain
+      // an unsafe tracking-only seed merely because making it safe costs more.
+      if (best_is_safe && (!safe(candidate, candidate_costs) || value >= best_value)) {break;}
+      best_value = value;
+      best = std::move(candidate);
+      costs = std::move(candidate_costs);
+      best_control = candidate_control;
+    }
+    if (!safe(best, costs)) {last_status_ = -3; return false;}
+  }
+  out_u = best_control;
+  last_u_global_ = Eigen::Vector3d(out_u.vx, out_u.vy, out_u.omega);
+  has_last_u_ = true;
+  if (out_pred) {*out_pred = std::move(best);}
+  return true;
+}
+
+bool MpcSolver::solveOnce(const State & curr,
+  const std::vector<ReferencePoint> & ref_traj,
+  const std::vector<CostLinearization> & costs,
+  Control & out_u, std::vector<State> * out_pred)
 {
   out_u = Control{};
   if (out_pred) {out_pred->clear();}
@@ -253,9 +443,6 @@ bool MpcSolver::solve(const State & curr,
     if (!point.pos.allFinite() || !point.vel.allFinite() ||
       !std::isfinite(point.yaw) || !std::isfinite(point.yaw_rate)) {return false;}
   }
-  // The original first-step acceleration constraint intends measured global
-  // velocity. OriginSim supplies it explicitly; never use a stale command here.
-  last_u_global_ = Eigen::Vector3d(curr.vx, curr.vy, curr.omega);
   const int N = config_.horizon;
   if (N <= 0) {
     return false;
@@ -272,7 +459,7 @@ bool MpcSolver::solve(const State & curr,
   Eigen::VectorXd lbA;
   Eigen::VectorXd ubA;
 
-  if (!buildCondensedQP(curr, ref_traj, H, g, lb, ub, A_con, lbA, ubA)) {
+  if (!buildCondensedQP(curr, ref_traj, costs, H, g, lb, ub, A_con, lbA, ubA)) {
     return false;
   }
 
@@ -379,6 +566,9 @@ bool MpcSolver::solve(const State & curr,
       s.x += dx;
       s.y += dy;
       s.yaw += dyaw;
+      s.vx = ux;
+      s.vy = uy;
+      s.omega = uw;
       out_pred->push_back(s);
     }
   }
@@ -386,10 +576,6 @@ bool MpcSolver::solve(const State & curr,
   // 取第一个控制量 u0 (global)
   const Eigen::Vector3d u0_global(
     static_cast<double>(xOpt[0]), static_cast<double>(xOpt[1]), static_cast<double>(xOpt[2]));
-
-  // 记录上一帧全局速度，用于平滑加速度
-  last_u_global_ = u0_global;
-  has_last_u_ = true;
 
   // 直接输出全局速度
   out_u.vx = u0_global.x();

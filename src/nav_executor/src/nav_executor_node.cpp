@@ -1,5 +1,6 @@
 #include <cmath>
 #include <csignal>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -493,13 +494,17 @@ int main(int argc, char ** argv)
       nav_executor::costmapClientOptions(params_file, "local_costmap", use_sim_time));
     auto node = std::make_shared<nav_executor::NavExecutor>(global);
     node->initializeExecutor(local);
-    rclcpp::executors::SingleThreadedExecutor executor;
+    // Odometry and snapshot receivers can run while the serialized controller
+    // is busy. The NavExecutor default group still serializes task/control APIs.
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 4);
     executor.add_node(global);
     executor.add_node(local);
     executor.add_node(node);
-    while (rclcpp::ok() && !shutdown_requested) {
-      executor.spin_once(std::chrono::milliseconds(50));
-    }
+    auto spinning = std::async(std::launch::async, [&executor]() {executor.spin();});
+    while (rclcpp::ok() && !shutdown_requested &&
+      spinning.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {}
+    executor.cancel();
+    spinning.get();
     executor.remove_node(node);
     node.reset();  // Stops planning before destroying the subscriber grids.
     executor.remove_node(local);
