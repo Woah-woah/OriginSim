@@ -6,6 +6,15 @@ nav_executor:
     goal_tolerance: 0.02
     retry_delay: 1.0
     planning_timeout: 5.0
+    path_smoother:
+      enabled: true            # 全路径联合 Minimum Jerk 平滑，失败安全回退
+      timeout: 0.3             # s，受全局规划总超时共同限制
+      control_spacing: 0.4     # m，短共线控制点合并间距
+      corridor_range: 1.0      # m，方形安全走廊最大范围
+      max_speed: 1.0           # m/s，仅用于时间分配
+      max_acceleration: 1.0    # m/s^2，仅用于时间分配
+      collision_iterations: 6
+      topology_iterations: 3
     controller_frequency: 20.0
     odom_topic: /odom
     cmd_vel_topic: /cmd_vel
@@ -16,13 +25,13 @@ nav_executor:
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
     connector_executor:
-      enabled: true            # /serial/head_dowm_cmd must have a single command owner
-      region_half_width: 0.8   # m, perpendicular to connector entrance -> exit
-      entry_extension: 1.0     # m, before entrance; full footprint intersection triggers
-      exit_extension: 0.3      # m, beyond exit
-      exit_hysteresis: 0.05    # m, extra clearance before releasing low-head command
-      exit_debounce: 0.2       # s, continuously outside before release
-      pose_timeout: 0.5        # s, stale/missing TF preserves command and retained regions
+      enabled: true            # 低头指令仅由本执行器发布
+      region_half_width: 0.8   # 单位米，垂直于通道行进方向的半宽
+      entry_extension: 1.0     # 单位米，入口前延伸距离，车体轮廓相交时触发
+      exit_extension: 0.3      # 单位米，出口后延伸距离
+      exit_hysteresis: 0.05    # 单位米，解除低头指令前的额外间距
+      exit_debounce: 0.2       # 单位秒，持续离开区域后解除低头指令
+      pose_timeout: 0.5        # 单位秒，坐标变换过期或缺失时保留指令与区域
     route_monitor:
       enabled: true
       deviation_distance: 0.5
@@ -46,7 +55,7 @@ nav_executor:
       control_delta_weight: [2.0, 2.0, 0.5]
       q_along: 3.0
       q_cross: 12.0
-      # w * C_linearized(x,y)^2; sequential convex QPs, metres for distances.
+      # 障碍代价为权重乘线性化代价的平方，采用序列凸二次规划，距离单位为米
       obstacle_weight: 30.0
       obstacle_smoothing_distance: 0.2
       obstacle_trust_region: 0.15
@@ -81,7 +90,7 @@ topology_planner:
   ros__parameters:
     use_sim_time: false
     TopoPlanner:
-      topology_yaml: "topo25.yaml"  # relative to topology_global_planner/config
+      topology_yaml: "topo25.yaml"  # 相对于拓扑规划器的配置目录
       use_topology: true
       allow_nearest_region_fallback: false
       region_boundary_tolerance: 0.03

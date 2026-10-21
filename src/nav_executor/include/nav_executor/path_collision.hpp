@@ -7,11 +7,12 @@
 
 namespace nav_executor
 {
-// Caller holds the grid mutex. Sweep a circular footprint along path segments.
-std::optional<double> findPathObstacle(
-  const nav_msgs::msg::Path & path, const map_server::Costmap2D & grid,
-  double radius, double begin = 0.0,
+// 调用方持有栅格锁，沿路径段扫描圆形车体轮廓
+std::optional<double> findPathObstacle(const nav_msgs::msg::Path & path,
+  const map_server::Costmap2D & grid,
+  double radius,
+  double begin = 0.0,
   double end = std::numeric_limits<double>::infinity());
-bool pathIsClear(const nav_msgs::msg::Path & path, const map_server::Costmap2D & grid,
-  double radius);
-}  // namespace nav_executor
+bool pathIsClear(
+  const nav_msgs::msg::Path & path, const map_server::Costmap2D & grid, double radius);
+} // 命名空间 nav_executor

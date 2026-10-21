@@ -5,8 +5,11 @@
 
 namespace nav_executor
 {
-PathPlanner::PathPlanner(Plan plan, Poll poll)
-: plan_(std::move(plan)), poll_(std::move(poll)), worker_(&PathPlanner::run, this) {}
+PathPlanner::PathPlanner(Plan plan, Poll poll, std::function<nav_msgs::msg::Path()> original_path)
+    : plan_(std::move(plan)), poll_(std::move(poll)), original_path_(std::move(original_path)),
+      worker_(&PathPlanner::run, this)
+{
+}
 
 PathPlanner::~PathPlanner()
 {
@@ -44,7 +47,7 @@ std::optional<PlanningResult> PathPlanner::takeResult()
 void PathPlanner::run()
 {
   while (!stopping_) {
-    // Planner timers/subscriptions and plan() run on this same worker.
+    // 规划器的定时器、订阅与规划调用均在同一线程执行
     poll_();
     std::optional<PlanningRequest> request;
     {
@@ -52,24 +55,34 @@ void PathPlanner::run()
       wake_.wait_for(lock, std::chrono::milliseconds(20), [this]() {
         return stopping_ || pending_.has_value();
       });
-      if (stopping_) {return;}
+      if (stopping_) {
+        return;
+      }
       request = std::move(pending_);
       pending_.reset();
     }
-    if (!request) {continue;}
-    PlanningResult result{request->identity, topology_global_planner::TopologyPlan{}, {}};
+    if (!request) {
+      continue;
+    }
+    PlanningResult result;
+    result.identity = request->identity;
     const auto cancel = [this, generation = request->identity.plan_generation]() {
-        return stopping_ || generation_ != generation;
-      };
+      return stopping_ || generation_ != generation;
+    };
     try {
-      if (!cancel()) {result.plan = plan_(*request, cancel);}
+      if (!cancel()) {
+        result.plan = plan_(*request, cancel);
+        result.original_path = original_path_();
+      }
     } catch (const std::exception & exception) {
       result.error = exception.what();
     } catch (...) {
       result.error = "Unknown planning exception";
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!cancel()) {result_ = std::move(result);}
+    if (!cancel()) {
+      result_ = std::move(result);
+    }
   }
 }
-}  // namespace nav_executor
+} // 命名空间 nav_executor

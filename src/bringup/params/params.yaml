@@ -125,14 +125,6 @@ nav_executor:
     xy_goal_tolerance: 0.3
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
-    connector_executor:
-      enabled: true
-      region_half_width: 0.8   # 矩形半宽
-      entry_extension: 1.0     # 入口前面
-      exit_extension: 0.3      # 出口后面
-      exit_hysteresis: 0.05    # 出口死区
-      exit_debounce: 0.2       # s, continuously outside before release
-      pose_timeout: 0.5        # s, stale/missing TF preserves command and retained regions
     route_monitor:
       enabled: true
       deviation_distance: 0.5
@@ -148,6 +140,23 @@ nav_executor:
         safety_margin: 0.05
         confirmations: 3
         maximum_sample_gap: 1.0
+    path_smoother:
+      enabled: true            # 全路径联合 Minimum Jerk 平滑，失败安全回退
+      timeout: 0.3             # s，受全局规划总超时共同限制
+      control_spacing: 0.4     # m，短共线控制点合并间距
+      corridor_range: 1.0      # m，方形安全走廊最大范围
+      max_speed: 2.5          # m/s，仅用于时间分配
+      max_acceleration: 2.2    # m/s^2，仅用于时间分配
+      collision_iterations: 6
+      topology_iterations: 3
+    connector_executor:
+      enabled: true
+      region_half_width: 0.8   # 矩形半宽
+      entry_extension: 1.0     # 入口前面
+      exit_extension: 0.3      # 出口后面
+      exit_hysteresis: 0.05    # 出口死区
+      exit_debounce: 0.2       # s, continuously outside before release
+      pose_timeout: 0.5        # s, stale/missing TF preserves command and retained regions
     MPC:
       dt: 0.02
       horizon: 25

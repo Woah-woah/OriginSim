@@ -1,0 +1,6 @@
+https://github.com/T-DT-Algorithm-2026/tdt-nav-kit
+Commit: 814d5ce0237acc7faa8c070e5c5e61e2ddc81996
+MinimumSnapOsqp, MIT, SnifferCaptain.
+Local changes: ROS-independent namespace isolation, cancellation/deadline, bounded spatial sampling,
+C++17 includes, costmap coordinate and border fixes, finite OSQP infinity and v1 time-limit compatibility. Polynomial/QP/collision iteration retained.
+Physical C2 residual checking and quintic Hermite roundoff refinement; bounded QP/sample budgets.

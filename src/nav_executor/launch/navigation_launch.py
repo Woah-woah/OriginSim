@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Launch the executor with independent map_server snapshot consumers."""
+# 使用独立代价地图快照客户端启动执行器
 
 import os
 
@@ -28,7 +28,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-
     bringup_dir = get_package_share_directory('bringup')
 
     namespace = LaunchConfiguration('namespace')
@@ -39,8 +38,10 @@ def generate_launch_description():
     log_level = LaunchConfiguration('log_level')
     clock_params = {'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}
 
-    remappings = [('/tf', 'tf'),
-                  ('/tf_static', 'tf_static')]
+    remappings = [
+        ('/tf', 'tf'),
+        ('/tf_static', 'tf_static'),
+    ]
 
     stdout_linebuf_envvar = SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1')
 
@@ -91,13 +92,13 @@ def generate_launch_description():
 
     load_nodes = GroupAction(actions=[OpaqueFunction(function=launch_executor)])
 
-    # Create the launch description and populate
+    # 组装启动描述
     ld = LaunchDescription()
 
-    # Set environment variables
+    # 设置环境变量
     ld.add_action(stdout_linebuf_envvar)
 
-    # Declare the launch options
+    # 注册启动参数
     ld.add_action(declare_namespace_cmd)
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_params_file_cmd)
@@ -105,7 +106,7 @@ def generate_launch_description():
     ld.add_action(declare_use_respawn_cmd)
     ld.add_action(declare_log_level_cmd)
 
-    # Start the navigation executor
+    # 启动导航执行器
     ld.add_action(load_nodes)
 
     return ld

@@ -11,6 +11,7 @@
   <depend>referee_msg</depend>
   <depend>map_server</depend>
   <depend>topology_global_planner</depend>
+  <depend>minimum_jerk_smoother</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>std_msgs</depend>

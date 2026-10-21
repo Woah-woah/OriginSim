@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Launch standalone navigation using independent map_server costmaps."""
+# 使用独立代价地图启动导航
 
 import os
 
@@ -27,12 +27,11 @@ from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
-
-    # Get the launch directories
+    # 获取启动目录
     nav_executor_dir = get_package_share_directory('nav_executor')
     bringup_dir = get_package_share_directory('bringup')
 
-    # Create the launch configuration variables
+    # 声明启动配置变量
     namespace = LaunchConfiguration('namespace')
     use_sim_time = LaunchConfiguration('use_sim_time')
     log_level = LaunchConfiguration('log_level')
@@ -87,13 +86,13 @@ def generate_launch_description():
         ]
     )
 
-    # Create the launch description and populate
+    # 组装启动描述
     ld = LaunchDescription()
 
-    # Set environment variables
+    # 设置环境变量
     ld.add_action(stdout_linebuf_envvar)
 
-    # Declare the launch options
+    # 注册启动参数
     ld.add_action(declare_namespace_cmd)
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_params_file_cmd)
@@ -101,7 +100,7 @@ def generate_launch_description():
     ld.add_action(declare_use_respawn_cmd)
     ld.add_action(declare_log_level_cmd)
 
-    # Include the navigation nodes
+    # 加载导航节点
     ld.add_action(bringup_cmd_group)
 
     return ld

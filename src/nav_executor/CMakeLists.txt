@@ -6,18 +6,36 @@ find_package(ament_index_cpp REQUIRED)
 find_package(Threads REQUIRED)
 find_package(referee_msg REQUIRED)
 find_package(yaml-cpp REQUIRED)
-set(dependencies rclcpp map_server topology_global_planner
-  geometry_msgs nav_msgs std_msgs std_srvs tf2 tf2_geometry_msgs minco_controller)
+set(dependencies
+  rclcpp
+  map_server
+  topology_global_planner
+  minimum_jerk_smoother
+  geometry_msgs
+  nav_msgs
+  std_msgs
+  std_srvs
+  tf2
+  tf2_geometry_msgs
+  minco_controller
+)
 foreach(dependency IN LISTS dependencies)
   find_package(${dependency} REQUIRED)
 endforeach()
 
-add_library(${PROJECT_NAME}_core src/task_manager.cpp src/path_planner.cpp src/path_executor.cpp
-  src/route_monitor.cpp src/path_collision.cpp src/connector_executor.cpp)
+add_library(${PROJECT_NAME}_core
+  src/task_manager.cpp
+  src/path_planner.cpp
+  src/path_executor.cpp
+  src/route_monitor.cpp
+  src/path_collision.cpp
+  src/connector_executor.cpp
+)
 target_compile_features(${PROJECT_NAME}_core PUBLIC cxx_std_17)
 target_include_directories(${PROJECT_NAME}_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
+  $<INSTALL_INTERFACE:include>
+)
 ament_target_dependencies(${PROJECT_NAME}_core ${dependencies})
 target_link_libraries(${PROJECT_NAME}_core Threads::Threads)
 
@@ -31,13 +49,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 install(TARGETS ${PROJECT_NAME}_core nav_executor_node
-  ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_export_include_directories(include)
 ament_export_dependencies(rclcpp geometry_msgs nav_msgs map_server topology_global_planner)
-
-
-
 ament_package()

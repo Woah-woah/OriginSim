@@ -24,21 +24,24 @@ struct RouteMonitorConfig
   double blocked_maximum_sample_gap{1.0};
 };
 
-// Detects route facts only. TaskManager owns validity, dispatch cooldown and goal state.
-// Called with fresh, validated execution feedback in the confirmed path's frame.
+// 使用已确认路径坐标系下的有效反馈检测路线状态，任务管理器负责有效性与调度
 class RouteMonitor
 {
 public:
   explicit RouteMonitor(RouteMonitorConfig config = {});
-  std::optional<ReplanEvent> observe(
-    const nav_msgs::msg::Path & path, PlanIdentity identity,
-    const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & command,
+  std::optional<ReplanEvent> observe(const nav_msgs::msg::Path & path,
+    PlanIdentity identity,
+    const geometry_msgs::msg::PoseStamped & pose,
+    const geometry_msgs::msg::Twist & command,
     TaskManager::Clock::time_point now);
   void reset();
-  std::optional<ReplanEvent> observeBlocked(
-    const nav_msgs::msg::Path & path, PlanIdentity identity,
-    const geometry_msgs::msg::PoseStamped & pose, const map_server::Costmap2D & grid,
-    int64_t map_stamp, double robot_radius, TaskManager::Clock::time_point now);
+  std::optional<ReplanEvent> observeBlocked(const nav_msgs::msg::Path & path,
+    PlanIdentity identity,
+    const geometry_msgs::msg::PoseStamped & pose,
+    const map_server::Costmap2D & grid,
+    int64_t map_stamp,
+    double robot_radius,
+    TaskManager::Clock::time_point now);
   void resetBlocked();
 
 private:
@@ -50,7 +53,8 @@ private:
   double progress_anchor_{0.0};
   std::optional<PlanIdentity> blocked_identity_;
   std::optional<int64_t> blocked_map_stamp_;
-  std::optional<TaskManager::Clock::time_point> blocked_sample_, blocked_since_;
+  std::optional<TaskManager::Clock::time_point> blocked_sample_;
+  std::optional<TaskManager::Clock::time_point> blocked_since_;
   unsigned int blocked_count_{0};
 };
-}  // namespace nav_executor
+} // 命名空间 nav_executor
