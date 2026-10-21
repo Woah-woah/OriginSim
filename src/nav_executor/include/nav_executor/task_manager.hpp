@@ -2,8 +2,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "topology_global_planner/topology_plan.hpp"
@@ -22,7 +24,8 @@ struct PlanIdentity
   bool operator!=(const PlanIdentity & other) const {return !(*this == other);}
 };
 
-// Every segment handoff changes this token even within the same planning result.
+// 分段标识只用于进度显示
+// 控制器始终使用整条规划的标识
 struct SegmentIdentity : PlanIdentity
 {
   size_t segment_index{0};
@@ -33,7 +36,7 @@ struct SegmentIdentity : PlanIdentity
 
 struct ReplanEvent
 {
-  SegmentIdentity identity;
+  PlanIdentity identity;
   ReplanReason reason{ReplanReason::NONE};
   double path_distance{0.0};
   double progress{0.0};
@@ -67,10 +70,12 @@ public:
   void cancel();
   std::optional<PlanningRequest> nextRequest(bool map_ready, Clock::time_point now);
   bool accept(PlanningResult result, Clock::time_point now);
-  bool executionFailed(SegmentIdentity identity, const std::string & error, Clock::time_point now);
-  bool segmentSucceeded(SegmentIdentity identity);
+  bool executionFailed(PlanIdentity identity, const std::string & error, Clock::time_point now);
+  bool executionSucceeded(PlanIdentity identity);
+  bool observeProgress(PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose,
+    double entry_clearance);
   bool routeInvalid(const ReplanEvent & event, Clock::time_point now);
-  bool isSegmentConfirmed(SegmentIdentity identity) const;
+  bool isPlanConfirmed(PlanIdentity identity) const;
   PlanIdentity identity() const {return identity_;}
   uint64_t generation() const {return identity_.plan_generation;}
   uint64_t replanCount() const {return replan_count_;}
@@ -79,14 +84,12 @@ public:
   const topology_global_planner::TopologyPlan & plan() const {return plan_;}
   const topology_global_planner::Segment * currentSegment() const;
   SegmentIdentity segmentIdentity() const {return SegmentIdentity{identity_, segment_index_};}
-  bool beginSegment(SegmentIdentity identity);
-  bool commitConnector(const topology_global_planner::Segment & connector, SegmentIdentity owner);
-  bool finalSegment() const {return segment_index_ + 1 == plan_.segments.size();}
   const std::string & error() const {return error_;}
   static const char * stateName(TaskState state);
   static const char * reasonName(ReplanReason reason);
 
 private:
+  void resetProgress();
   double goal_tolerance_;
   Clock::duration retry_delay_;
   Clock::time_point retry_at_{};
@@ -100,6 +103,10 @@ private:
   TaskState state_{TaskState::IDLE};
   topology_global_planner::TopologyPlan plan_;
   size_t segment_index_{0};
+  std::vector<double> path_arcs_, segment_ends_;
+  double route_progress_{0.0};
+  double connector_progress_{-std::numeric_limits<double>::infinity()};
+  std::optional<geometry_msgs::msg::Point> previous_position_;
   // Physical commitment survives goal replacement, cancellation and planning retries.
   std::optional<topology_global_planner::Segment> active_connector_;
   std::string error_;

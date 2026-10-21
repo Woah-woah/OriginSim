@@ -46,7 +46,7 @@ bool TaskManager::replan()
   state_ = TaskState::WAITING_FOR_MAP;
   retry_at_ = Clock::time_point{};
   plan_ = {};
-  segment_index_ = 0;
+  resetProgress();
   error_.clear();
   route_replan_pending_ = false;
   return true;
@@ -57,7 +57,7 @@ void TaskManager::cancel()
   ++identity_.plan_generation;
   goal_.reset();
   plan_ = {};
-  segment_index_ = 0;
+  resetProgress();
   error_.clear();
   state_ = TaskState::IDLE;
   retry_at_ = next_route_plan_at_ = Clock::time_point{};
@@ -103,13 +103,30 @@ bool TaskManager::accept(PlanningResult result, Clock::time_point now)
         result.error = "Invalid segment path or frame";
         break;
       }
+      if (std::any_of(segment.path.poses.begin(), segment.path.poses.end(), [](const auto & pose) {
+        const auto & p = pose.pose.position;
+        return !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z);
+      }))
+      {
+        result.error = "Invalid segment position";
+        break;
+      }
       if (i > 0 && segments[i - 1].path.poses.back().pose != segment.path.poses.front().pose) {
         result.error = "Discontinuous segment boundary";
         break;
       }
       if (segment.type == topology_global_planner::SegmentType::CONNECTOR &&
         (segment.connector_id.empty() || segment.from_region.empty() || segment.to_region.empty() ||
-        segment.path.poses.back().pose != segment.exit_pose.pose))
+        segment.path.poses.back().pose != segment.exit_pose.pose ||
+        segment.wait_pose.header.frame_id != result.plan.full_path.header.frame_id ||
+        segment.exit_pose.header.frame_id != result.plan.full_path.header.frame_id ||
+        !std::isfinite(segment.corridor_half_width) || segment.corridor_half_width <= 0.0 ||
+        !std::isfinite(segment.wait_pose.pose.position.x) ||
+        !std::isfinite(segment.wait_pose.pose.position.y) ||
+        !std::isfinite(segment.exit_pose.pose.position.x) ||
+        !std::isfinite(segment.exit_pose.pose.position.y) ||
+        std::hypot(segment.exit_pose.pose.position.x-segment.wait_pose.pose.position.x,
+          segment.exit_pose.pose.position.y-segment.wait_pose.pose.position.y) <= 1e-6))
       {
         result.error = "Invalid connector metadata or exit";
         break;
@@ -137,12 +154,25 @@ bool TaskManager::accept(PlanningResult result, Clock::time_point now)
     result.plan.segments.empty()) {
     error_ = result.error.empty() ? "TopologyPlanner returned an empty path" : result.error;
     plan_ = {};
-    segment_index_ = 0;
+    resetProgress();
     retry_at_ = now + retry_delay_;
     state_ = TaskState::FAILED;
   } else {
     plan_ = std::move(result.plan);
-    segment_index_ = 0;
+    resetProgress();
+    double arc = 0.0;
+    auto previous = plan_.full_path.poses.front().pose.position;
+    for (const auto & waypoint : plan_.full_path.poses) {
+      const auto & p = waypoint.pose.position;
+      arc += std::hypot(p.x-previous.x, p.y-previous.y);
+      path_arcs_.push_back(arc);
+      previous = p;
+    }
+    size_t count = 0;
+    for (const auto & segment : plan_.segments) {
+      count += segment.path.poses.size();
+      segment_ends_.push_back(path_arcs_[count-1]);
+    }
     error_.clear();
     state_ = TaskState::PATH_READY;
   }
@@ -162,27 +192,25 @@ const char * TaskManager::stateName(TaskState state)
   return "UNKNOWN";
 }
 
-bool TaskManager::executionFailed(SegmentIdentity identity, const std::string & error,
+bool TaskManager::executionFailed(PlanIdentity identity, const std::string & error,
   Clock::time_point now)
 {
-  if (!isSegmentConfirmed(identity)) {return false;}
+  if (!isPlanConfirmed(identity)) {return false;}
   ++identity_.plan_generation;
   plan_ = {};
-  segment_index_ = 0;
+  resetProgress();
   error_ = error;
   retry_at_ = now + retry_delay_;
   state_ = TaskState::FAILED;
   return true;
 }
 
-bool TaskManager::segmentSucceeded(SegmentIdentity identity)
+bool TaskManager::executionSucceeded(PlanIdentity identity)
 {
-  if (!isSegmentConfirmed(identity)) {return false;}
-  if (currentSegment()->type == topology_global_planner::SegmentType::CONNECTOR) {
-    active_connector_.reset();
-  }
-  ++segment_index_;
-  if (segment_index_ == plan_.segments.size()) {state_ = TaskState::SUCCEEDED;}
+  if (!isPlanConfirmed(identity)) {return false;}
+  active_connector_.reset();
+  segment_index_ = plan_.segments.size();
+  state_ = TaskState::SUCCEEDED;
   error_.clear();
   return true;
 }
@@ -193,37 +221,125 @@ const topology_global_planner::Segment * TaskManager::currentSegment() const
   return &plan_.segments[segment_index_];
 }
 
-bool TaskManager::beginSegment(SegmentIdentity identity)
+bool TaskManager::isPlanConfirmed(PlanIdentity identity) const
 {
-  if (!isSegmentConfirmed(identity)) {return false;}
-  if (currentSegment()->type == topology_global_planner::SegmentType::CONNECTOR) {
-    active_connector_ = *currentSegment();
-  }
-  return true;
+  return goal_.has_value() && state_ == TaskState::PATH_READY && identity == identity_ &&
+         !plan_.full_path.poses.empty();
 }
 
-bool TaskManager::commitConnector(const topology_global_planner::Segment & connector,
-  SegmentIdentity owner)
+void TaskManager::resetProgress()
 {
-  if (!isSegmentConfirmed(owner) || connector.type != topology_global_planner::SegmentType::CONNECTOR) {
+  segment_index_ = 0;
+  path_arcs_.clear();
+  segment_ends_.clear();
+  route_progress_ = 0.0;
+  connector_progress_ = -INFINITY;
+  previous_position_.reset();
+}
+
+bool TaskManager::observeProgress(
+  PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose, double entry_clearance)
+{
+  if (!isPlanConfirmed(identity)) {
     return false;
   }
-  if (active_connector_ && (active_connector_->connector_id != connector.connector_id ||
-    active_connector_->from_region != connector.from_region || active_connector_->to_region != connector.to_region))
-  {return false;}
-  active_connector_ = connector;
-  return true;
-}
+  const auto & position = pose.pose.position;
+  if (pose.header.frame_id != plan_.full_path.header.frame_id || !std::isfinite(position.x) ||
+      !std::isfinite(position.y) || !std::isfinite(entry_clearance) || entry_clearance <= 0.0)
+  {
+    throw std::invalid_argument("Invalid route progress pose or entry clearance");
+  }
+  const size_t previous_index = segment_index_;
+  const double travel = previous_position_ ? std::hypot(position.x - previous_position_->x,
+                                               position.y - previous_position_->y)
+                                           : 0.0;
+  previous_position_ = position;
 
-bool TaskManager::isSegmentConfirmed(SegmentIdentity identity) const
-{
-  return goal_.has_value() && currentSegment() && identity == segmentIdentity() &&
-         !currentSegment()->path.poses.empty();
+  // 只在已走位置附近投影
+  // 避免交叉路线上的相同坐标让进度跳到后面的通道
+  const double search_begin = std::max(0.0, route_progress_ - 0.1);
+  const double search_end = std::min(path_arcs_.back(), route_progress_ + travel + 0.5);
+  double distance = INFINITY, projected = route_progress_;
+  const auto & points = plan_.full_path.poses;
+  for (size_t i = 1; i < points.size(); ++i) {
+    const double begin = path_arcs_[i - 1], end = path_arcs_[i];
+    if (end < search_begin || begin > search_end || end - begin <= 1e-9) {
+      continue;
+    }
+    const auto & a = points[i - 1].pose.position;
+    const auto & b = points[i].pose.position;
+    const double dx = b.x - a.x, dy = b.y - a.y, length = end - begin;
+    const double fraction =
+      std::clamp(((position.x - a.x) * dx + (position.y - a.y) * dy) / (length * length),
+        std::max(0.0, (search_begin - begin) / length),
+        std::min(1.0, (search_end - begin) / length));
+    const double candidate =
+      std::hypot(position.x - a.x - fraction * dx, position.y - a.y - fraction * dy);
+    if (candidate < distance) {
+      distance = candidate;
+      projected = begin + fraction * length;
+    }
+  }
+
+  route_progress_ = std::max(route_progress_, projected);
+  while (segment_index_ < plan_.segments.size()) {
+    const auto & segment = plan_.segments[segment_index_];
+    if (segment.type == topology_global_planner::SegmentType::CONNECTOR) {
+      const auto & wait = segment.wait_pose.pose.position;
+      const auto & exit = segment.exit_pose.pose.position;
+      const double dx = exit.x - wait.x, dy = exit.y - wait.y, length = std::hypot(dx, dy);
+      const double along = ((position.x - wait.x) * dx + (position.y - wait.y) * dy) / length;
+      const double lateral =
+        std::abs((position.x - wait.x) * dy - (position.y - wait.y) * dx) / length;
+      const auto & first = segment.path.poses.front().pose.position;
+      const double first_progress = ((first.x - wait.x) * dx + (first.y - wait.y) * dy) / length;
+      if (along < std::min(-0.05, first_progress - 0.05) || along < connector_progress_ - 0.05 ||
+          lateral > segment.corridor_half_width)
+      {
+        throw std::runtime_error("Robot left directed connector corridor or reversed traversal");
+      }
+      connector_progress_ = std::max(connector_progress_, along);
+      active_connector_ = segment;
+      if (along < length - 1e-6) {
+        break;
+      }
+      route_progress_ = std::max(route_progress_, segment_ends_[segment_index_]);
+      active_connector_.reset();
+    } else if (route_progress_ < segment_ends_[segment_index_] - 1e-6) {
+      break;
+    }
+    if (segment_index_ + 1 == plan_.segments.size()) {
+      break;
+    }
+    ++segment_index_;
+    connector_progress_ = -INFINITY;
+  }
+
+  // 接近入口时保留通道承诺
+  // 换目标或重规划仍需沿既定方向走到出口
+  const auto * segment = currentSegment();
+  if (segment && segment->type == topology_global_planner::SegmentType::NORMAL &&
+      segment_index_ + 1 < plan_.segments.size())
+  {
+    const auto & next = plan_.segments[segment_index_ + 1];
+    if (next.type == topology_global_planner::SegmentType::CONNECTOR) {
+      const auto & wait = next.wait_pose.pose.position;
+      const auto & exit = next.exit_pose.pose.position;
+      const double dx = exit.x - wait.x, dy = exit.y - wait.y, length = std::hypot(dx, dy);
+      const double along = ((position.x - wait.x) * dx + (position.y - wait.y) * dy) / length;
+      const double lateral =
+        std::abs((position.x - wait.x) * dy - (position.y - wait.y) * dx) / length;
+      if (along >= -entry_clearance && along <= length && lateral <= next.corridor_half_width) {
+        active_connector_ = next;
+      }
+    }
+  }
+  return previous_index != segment_index_;
 }
 
 bool TaskManager::routeInvalid(const ReplanEvent & event, Clock::time_point now)
 {
-  if (!isSegmentConfirmed(event.identity) ||
+  if (!isPlanConfirmed(event.identity) ||
     (event.reason != ReplanReason::PATH_DEVIATION &&
     event.reason != ReplanReason::EXECUTION_STALLED && event.reason != ReplanReason::PATH_BLOCKED))
   {

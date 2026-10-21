@@ -126,7 +126,7 @@ nav_executor:
     yaw_goal_tolerance: 3.14
     stopped_velocity_tolerance: 0.05
     connector_executor:
-      enabled: false
+      enabled: true
       region_half_width: 0.8   # 矩形半宽
       entry_extension: 1.0     # 入口前面
       exit_extension: 0.3      # 出口后面
@@ -192,7 +192,7 @@ topology_planner:
     use_sim_time: true
     TopoPlanner:
       topology_yaml: "topo25.yaml"
-      use_topology: false
+      use_topology: true
       allow_nearest_region_fallback: false
       region_boundary_tolerance: 0.03
       region_constraint_tolerance: 0.15

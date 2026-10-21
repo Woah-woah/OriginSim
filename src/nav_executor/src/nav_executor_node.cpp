@@ -401,7 +401,7 @@ public:
             RCLCPP_WARN(get_logger(), "Planning failed: %s", tasks_.error().c_str());
           }
           if (executor_ && tasks_.state() == TaskState::PATH_READY) {
-            dispatchSegment(false);
+            dispatchPath();
           }
           publishTask();
         }
@@ -422,26 +422,27 @@ public:
         std::unique_lock<map_server::Costmap2D::mutex_t> lock(*costmap_->getCostmap()->getMutex());
         return costmap_->isCurrent();
       },
-      [this](SegmentIdentity identity, const std::string & error) {
+      [this](PlanIdentity identity, const std::string & error) {
         if (tasks_.executionFailed(identity, error, TaskManager::Clock::now())) {
           worker_->invalidate(tasks_.generation());
           publishTask();
         }
       },
-      [this](SegmentIdentity identity) {
-        if (tasks_.segmentSucceeded(identity)) {
+      [this](PlanIdentity identity) {
+        if (tasks_.executionSucceeded(identity)) {
           monitor_->reset();
-          if (tasks_.state() == TaskState::PATH_READY) {dispatchSegment(true);}
           publishTask();
         }
       },
-      [this](SegmentIdentity identity) {return tasks_.isSegmentConfirmed(identity);},
-      [this](SegmentIdentity identity, const geometry_msgs::msg::PoseStamped & pose,
+      [this](PlanIdentity identity) {return tasks_.isPlanConfirmed(identity);},
+      [this](PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose) {
+        if (tasks_.observeProgress(identity, pose, connector_entry_clearance_)) {publishTask();}
+      },
+      [this](PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose,
         const geometry_msgs::msg::Twist & command) {
-        if (!tasks_.isSegmentConfirmed(identity)) {return;}
-        commitApproachingConnector(identity, pose);
+        if (!tasks_.isPlanConfirmed(identity)) {return;}
         const auto now = TaskManager::Clock::now();
-        const auto event = monitor_->observe(tasks_.currentSegment()->path, identity, pose, command, now);
+        const auto event = monitor_->observe(tasks_.plan().full_path, identity, pose, command, now);
         if (event) {handleReplanEvent(*event, now);}
       });
   }
@@ -465,42 +466,11 @@ private:
     publishTask();
   }
 
-  void commitApproachingConnector(SegmentIdentity identity,
-    const geometry_msgs::msg::PoseStamped & pose)
+  void dispatchPath()
   {
-    const auto * segment = tasks_.currentSegment();
-    const auto next_index = identity.segment_index + 1;
-    if (!segment || segment->type != topology_global_planner::SegmentType::NORMAL ||
-      next_index >= tasks_.plan().segments.size()) {return;}
-    const auto & next = tasks_.plan().segments[next_index];
-    if (next.type != topology_global_planner::SegmentType::CONNECTOR ||
-      next.wait_pose.header.frame_id != pose.header.frame_id) {return;}
-    const auto & wait = next.wait_pose.pose.position;
-    const auto & exit = next.exit_pose.pose.position;
-    const double dx = exit.x - wait.x, dy = exit.y - wait.y;
-    const double length = std::hypot(dx, dy);
-    if (length <= 1e-6) {return;}
-    const double px = pose.pose.position.x - wait.x, py = pose.pose.position.y - wait.y;
-    const double progress = (px * dx + py * dy) / length;
-    const double lateral = std::abs(px * dy - py * dx) / length;
-    if (progress >= -connector_entry_clearance_ && progress <= length &&
-      lateral <= next.corridor_half_width)
-    {
-      if (!tasks_.commitConnector(next, identity)) {
-        throw std::runtime_error("Cannot commit connector approach to current task");
-      }
-    }
-  }
-
-  void dispatchSegment(bool continuous)
-  {
-    const auto * segment = tasks_.currentSegment();
-    if (!executor_ || !segment) {return;}
-    const auto identity = tasks_.segmentIdentity();
+    if (!executor_ || tasks_.state() != TaskState::PATH_READY) {return;}
     monitor_->reset();
-    if (tasks_.beginSegment(identity)) {
-      executor_->acceptSegment(*segment, identity, tasks_.finalSegment(), continuous);
-    }
+    executor_->acceptPath(tasks_.plan().full_path, tasks_.identity());
   }
 
   void handleReplanEvent(const ReplanEvent & event, TaskManager::Clock::time_point now)
@@ -539,7 +509,7 @@ private:
       for (const auto & vertex : costmap_->getRobotFootprint()) {
         radius = std::max(radius, std::hypot(vertex.x, vertex.y));
       }
-      event = monitor_->observeBlocked(tasks_.currentSegment()->path, tasks_.segmentIdentity(), *pose, *grid,
+      event = monitor_->observeBlocked(tasks_.plan().full_path, tasks_.identity(), *pose, *grid,
         costmap_->snapshotStamp().nanoseconds(), radius, now);
     }
     if (event) {handleReplanEvent(*event, now);}
@@ -582,7 +552,7 @@ private:
       } catch (const std::exception & error) {
         RCLCPP_ERROR(get_logger(), "Connector region update rejected: %s", error.what());
         if (executor_) {executor_->stop(error.what());}
-        tasks_.executionFailed(tasks_.segmentIdentity(), error.what(), TaskManager::Clock::now());
+        tasks_.executionFailed(tasks_.identity(), error.what(), TaskManager::Clock::now());
         worker_->invalidate(tasks_.generation());
         connector_->setPlan({});
         connector_plan_identity_ = tasks_.identity();

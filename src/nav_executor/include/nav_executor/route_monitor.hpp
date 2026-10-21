@@ -31,24 +31,24 @@ class RouteMonitor
 public:
   explicit RouteMonitor(RouteMonitorConfig config = {});
   std::optional<ReplanEvent> observe(
-    const nav_msgs::msg::Path & path, SegmentIdentity identity,
+    const nav_msgs::msg::Path & path, PlanIdentity identity,
     const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & command,
     TaskManager::Clock::time_point now);
   void reset();
   std::optional<ReplanEvent> observeBlocked(
-    const nav_msgs::msg::Path & path, SegmentIdentity identity,
+    const nav_msgs::msg::Path & path, PlanIdentity identity,
     const geometry_msgs::msg::PoseStamped & pose, const map_server::Costmap2D & grid,
     int64_t map_stamp, double robot_radius, TaskManager::Clock::time_point now);
   void resetBlocked();
 
 private:
   RouteMonitorConfig config_;
-  std::optional<SegmentIdentity> identity_;
+  std::optional<PlanIdentity> identity_;
   std::optional<TaskManager::Clock::time_point> previous_sample_;
   std::optional<TaskManager::Clock::time_point> deviation_since_;
   std::optional<TaskManager::Clock::time_point> stall_since_;
   double progress_anchor_{0.0};
-  std::optional<SegmentIdentity> blocked_identity_;
+  std::optional<PlanIdentity> blocked_identity_;
   std::optional<int64_t> blocked_map_stamp_;
   std::optional<TaskManager::Clock::time_point> blocked_sample_, blocked_since_;
   unsigned int blocked_count_{0};

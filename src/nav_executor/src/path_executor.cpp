@@ -70,10 +70,10 @@ public:
   Impl(const rclcpp::Node::SharedPtr & node,
     std::shared_ptr<map_server::CostmapClient> costmap,
     std::function<bool()> global_ready, Failure failure, Success success,
-    Confirmation confirmation, Observation observation)
+    Confirmation confirmation, Progress progress, Observation observation)
   : node_(node), costmap_(std::move(costmap)), global_ready_(std::move(global_ready)),
     failure_(std::move(failure)), success_(std::move(success)),
-    confirmation_(std::move(confirmation)), observation_(std::move(observation)),
+    confirmation_(std::move(confirmation)), progress_(std::move(progress)), observation_(std::move(observation)),
     logger_(node->get_logger()), clock_(node->get_clock())
   {
     frequency_ = node->declare_parameter("controller_frequency", 20.0);
@@ -185,11 +185,8 @@ public:
     }
   }
 
-  bool acceptSegment(const topology_global_planner::Segment & segment,
-    SegmentIdentity identity, bool final_segment, bool continuous)
+  bool acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity)
   {
-    const auto & path = segment.path;
-    // An obsolete handoff must neither replace the plan nor stop its newer executor.
     if (emergency_stop_) {publishZero(); return false;}
     if (!confirmation_(identity)) {
       RCLCPP_WARN(logger_, "Ignoring unconfirmed path: goal_id=%lu plan_generation=%lu",
@@ -197,20 +194,8 @@ public:
         static_cast<unsigned long>(identity.plan_generation));
       return false;
     }
-    if (continuous) {
-      const bool consecutive = state_ == ExecutionState::SUCCEEDED && !path_ &&
-        identity.goal_id == identity_.goal_id && identity.plan_generation == identity_.plan_generation &&
-        identity.segment_index == identity_.segment_index + 1;
-      if (!consecutive) {
-        stop("Invalid continuous segment handoff");
-        failure_(identity, "Invalid continuous segment handoff");
-        return false;
-      }
-    } else {
-      stop("Replacing execution path");
-    }
+    stop("Replacing execution path");
     identity_ = identity;
-    final_segment_ = final_segment;
     try {
       if (path.poses.empty() || path.header.frame_id.empty()) {
         throw std::invalid_argument("Cannot execute an empty path or frame");
@@ -222,33 +207,15 @@ public:
           throw std::invalid_argument("Invalid pose or inconsistent frame in execution path");
         }
       }
-      if (segment.type == topology_global_planner::SegmentType::CONNECTOR &&
-        (!finitePose(segment.wait_pose.pose) || !finitePose(segment.exit_pose.pose) ||
-        !std::isfinite(segment.corridor_half_width) || segment.corridor_half_width <= 0.0))
-      {
-        throw std::invalid_argument("Invalid connector geometry or width");
-      }
-      segment_ = segment;
-      connector_progress_ = -INFINITY;
-      segment_tolerances_ = tolerances_;
-      if (!final_segment || segment.type == topology_global_planner::SegmentType::CONNECTOR) {
-        segment_tolerances_.xy = std::min(tolerances_.xy, 0.05);
-        // Preserve the configured chassis-yaw policy. Omni/fixed-heading
-        // controllers cannot satisfy an extra portal-heading requirement.
-        // Directed portal order and corridor checks constrain route direction.
-      }
       controller_.setPlan(path);
       path_ = path;
-      RCLCPP_INFO(logger_, "Executing segment: goal_id=%lu generation=%lu index=%zu type=%s connector=%s "
-        "xy_tolerance=%.3f yaw_tolerance=%.3f",
+      RCLCPP_INFO(logger_, "Executing full path: goal_id=%lu generation=%lu poses=%zu",
         static_cast<unsigned long>(identity_.goal_id),
-        static_cast<unsigned long>(identity_.plan_generation), identity_.segment_index,
-        segment.type == topology_global_planner::SegmentType::CONNECTOR ? "CONNECTOR" : "NORMAL",
-        segment.connector_id.c_str(), segment_tolerances_.xy, segment_tolerances_.yaw);
+        static_cast<unsigned long>(identity_.plan_generation), path.poses.size());
       state_ = ExecutionState::RUNNING;
       return true;
     } catch (const std::exception & exception) {
-      // Acceptance failure must also invalidate the TaskManager product.
+      path_.reset();
       publishZero();
       state_ = ExecutionState::FAILED;
       failure_(identity_, exception.what());
@@ -310,10 +277,10 @@ public:
     if (!completion_wait_since_) {completion_wait_since_ = now;}
     if (now - *completion_wait_since_ < std::chrono::seconds(2)) {return;}
     RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000,
-      "Segment awaiting completion: index=%zu distance=%.3f/%.3f yaw_error=%.3f/%.3f "
+      "Goal awaiting completion: distance=%.3f/%.3f yaw_error=%.3f/%.3f "
       "measured_speed=%.3f measured_wz=%.3f stopped_tolerance=%.3f",
-      identity_.segment_index, distance, segment_tolerances_.xy,
-      std::abs(yaw_error), segment_tolerances_.yaw,
+      distance, tolerances_.xy,
+      std::abs(yaw_error), tolerances_.yaw,
       std::hypot(speed.linear.x, speed.linear.y), std::abs(speed.angular.z),
       tolerances_.stopped_speed);
   }
@@ -346,47 +313,16 @@ public:
       if (!finitePose(pose.pose) || !finitePose(goal.pose)) {
         throw std::runtime_error("Robot or goal TF pose is invalid");
       }
-      if (segment_.type == topology_global_planner::SegmentType::CONNECTOR) {
-        auto route_pose = pose;
-        route_pose.header.stamp = builtin_interfaces::msg::Time{};
-        route_pose = costmap_->getTfBuffer()->transform(route_pose, path_->header.frame_id);
-        const auto & wait = segment_.wait_pose.pose.position;
-        const auto & exit = segment_.exit_pose.pose.position;
-        const double dx = exit.x - wait.x, dy = exit.y - wait.y;
-        const double length = std::hypot(dx, dy);
-        if (length <= 1e-6) {throw std::runtime_error("Invalid connector geometry");}
-        const double px = route_pose.pose.position.x - wait.x;
-        const double py = route_pose.pose.position.y - wait.y;
-        const double progress = (px * dx + py * dy) / length;
-        const double lateral = std::abs(px * dy - py * dx) / length;
-        const auto & first = path_->poses.front().pose.position;
-        const double first_progress = ((first.x - wait.x) * dx + (first.y - wait.y) * dy) / length;
-        if (progress < std::min(-0.05, first_progress - 0.05) || progress > length + 0.05 ||
-          progress < connector_progress_ - 0.05 || lateral > segment_.corridor_half_width)
-        {
-          throw std::runtime_error("Robot left directed connector corridor or reversed traversal");
-        }
-        connector_progress_ = std::max(connector_progress_, progress);
-      }
       auto route_pose = pose;
       route_pose.header.stamp = builtin_interfaces::msg::Time{};
       route_pose = costmap_->getTfBuffer()->transform(route_pose, path_->header.frame_id);
+      progress_(identity_, route_pose);
       if (!confirmation_(identity_) || emergency_stop_) {publishZero(); return;}
       const double distance = std::hypot(pose.pose.position.x - goal.pose.position.x,
         pose.pose.position.y - goal.pose.position.y);
       const double yaw_error = std::remainder(
         tf2::getYaw(pose.pose.orientation) - tf2::getYaw(goal.pose.orientation), 2.0 * M_PI);
-      if (distance <= segment_tolerances_.xy && std::abs(yaw_error) <= segment_tolerances_.yaw) {
-        if (!final_segment_) {
-          // A segment boundary is a waypoint, not a stopped navigation goal.
-          // The synchronous callback hands off only the next confirmed segment.
-          path_.reset();
-          state_ = ExecutionState::SUCCEEDED;
-          completion_wait_since_.reset();
-          success_(identity_);
-          if (!path_ || state_ != ExecutionState::RUNNING) {publishZero();}
-          return;
-        }
+      if (distance <= tolerances_.xy && std::abs(yaw_error) <= tolerances_.yaw) {
         publishZero();
         if (std::hypot(speed.linear.x, speed.linear.y) <= tolerances_.stopped_speed &&
           std::abs(speed.angular.z) <= tolerances_.stopped_speed)
@@ -429,7 +365,7 @@ public:
       // The monitor callback can synchronously revoke this path through TaskManager.
       observation_(identity_, route_pose, command.twist);
       if (!path_ || !confirmation_(identity_)) {publishZero(); return;}
-      if (distance <= std::max(0.3, 2.0 * segment_tolerances_.xy) &&
+      if (distance <= std::max(0.3, 2.0 * tolerances_.xy) &&
         std::hypot(command.twist.linear.x, command.twist.linear.y) < 0.1 &&
         std::abs(command.twist.angular.z) < 0.1)
       {
@@ -449,17 +385,15 @@ public:
   Failure failure_;
   Success success_;
   Confirmation confirmation_;
+  Progress progress_;
   Observation observation_;
   std::atomic<bool> emergency_stop_{false};
   std::mutex command_mutex_;
   rclcpp::Logger logger_;
   rclcpp::Clock::SharedPtr clock_;
   double frequency_, odom_timeout_, tf_timeout_, control_timeout_;
-  GoalTolerances tolerances_, segment_tolerances_;
+  GoalTolerances tolerances_;
   std::optional<TaskManager::Clock::time_point> completion_wait_since_;
-  topology_global_planner::Segment segment_;
-  bool final_segment_{true};
-  double connector_progress_{-INFINITY};
   minco_controller::MincoMpcController controller_;
   std::optional<nav_msgs::msg::Path> path_;
   std::mutex odom_mutex_;
@@ -467,7 +401,7 @@ public:
   std::string odom_error_;
   rclcpp::CallbackGroup::SharedPtr odom_group_;
   TaskManager::Clock::time_point odom_received_{};
-  SegmentIdentity identity_;
+  PlanIdentity identity_;
   ExecutionState state_{ExecutionState::IDLE};
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -477,13 +411,13 @@ public:
 PathExecutor::PathExecutor(const rclcpp::Node::SharedPtr & node,
   std::shared_ptr<map_server::CostmapClient> local_costmap,
   std::function<bool()> global_map_ready, Failure failure, Success success,
-  Confirmation confirmation, Observation observation)
+  Confirmation confirmation, Progress progress, Observation observation)
 : impl_(std::make_unique<Impl>(node, std::move(local_costmap), std::move(global_map_ready),
-    std::move(failure), std::move(success), std::move(confirmation), std::move(observation))) {}
+    std::move(failure), std::move(success), std::move(confirmation), std::move(progress),
+    std::move(observation))) {}
 PathExecutor::~PathExecutor() = default;
-bool PathExecutor::acceptSegment(const topology_global_planner::Segment & segment,
-  SegmentIdentity identity, bool final_segment, bool continuous)
-{return impl_->acceptSegment(segment, identity, final_segment, continuous);}
+bool PathExecutor::acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity)
+{return impl_->acceptPath(path, identity);}
 void PathExecutor::emergencyStop() {impl_->emergencyStop();}
 void PathExecutor::clearEmergencyStop() {impl_->clearEmergencyStop();}
 void PathExecutor::stop(const std::string & reason) {impl_->stop(reason);}
