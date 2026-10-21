@@ -200,7 +200,7 @@ topology_planner:
   ros__parameters:
     use_sim_time: true
     TopoPlanner:
-      topology_yaml: "topo25.yaml"
+      topology_yaml: "topo26.yaml"
       use_topology: true
       allow_nearest_region_fallback: false
       region_boundary_tolerance: 0.03
