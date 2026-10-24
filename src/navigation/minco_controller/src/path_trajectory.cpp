@@ -19,23 +19,23 @@ void PathTrajectory::setPath(const std::vector<ReferencePoint> & points,
   if (points.empty() || !std::isfinite(speed) || speed <= 0.0 ||
     !std::isfinite(acceleration) || acceleration <= 0.0 ||
     !std::isfinite(yaw_rate) || yaw_rate <= 0.0)
-  {throw std::invalid_argument("Invalid MPC path or reference motion limits");}
+  {throw std::invalid_argument("局部参考路径或参考运动上限无效");}
   for (const auto & point : points) {
-    if (!point.pos.allFinite() || !std::isfinite(point.yaw)) {
-      throw std::invalid_argument("MPC path contains non-finite geometry");
+    if (!point.pos.allFinite() || !std::isfinite(point.heading_yaw)) {
+      throw std::invalid_argument("局部路径包含无效坐标或朝向");
     }
   }
-  knots_.push_back({points.front().pos, track_yaw ? points.front().yaw : 0.0});
+  knots_.push_back({points.front().pos, track_yaw ? points.front().heading_yaw : 0.0});
   for (size_t i = 1; i < points.size(); ++i) {
     const auto previous = knots_.back();
     const auto delta = points[i].pos - previous.position;
     const double distance = delta.norm();
-    const double yaw_delta = track_yaw ? wrap(points[i].yaw - previous.yaw) : 0.0;
+    const double yaw_delta = track_yaw ? wrap(points[i].heading_yaw - previous.yaw) : 0.0;
     if (distance < 1e-9 && std::abs(yaw_delta) < 1e-9) {continue;}
     const double subdivisions = std::max({2.0, std::ceil(distance / 0.05),
       std::ceil(std::abs(yaw_delta) / 0.1)});
     if (subdivisions + knots_.size() > 100000) {
-      throw std::invalid_argument("MPC path exceeds 100000 reference knots");
+      throw std::invalid_argument("局部参考路径点数超过十万个，拒绝执行");
     }
     const int count = static_cast<int>(subdivisions);
     for (int j = 1; j <= count; ++j) {
@@ -75,7 +75,7 @@ void PathTrajectory::setPath(const std::vector<ReferencePoint> & points,
     const double dt = ds > 1e-9 ? 2.0 * ds / (a.speed + b.speed) :
       std::abs(b.yaw - a.yaw) / yaw_rate;
     if (!std::isfinite(dt) || dt <= 0.0) {
-      throw std::invalid_argument("MPC path has an unparameterizable segment");
+      throw std::invalid_argument("局部路径有无法分配有效运行时间的路段");
     }
     b.time = a.time + dt;
   }
@@ -83,11 +83,18 @@ void PathTrajectory::setPath(const std::vector<ReferencePoint> & points,
 
 ReferencePoint PathTrajectory::sample(double time) const
 {
-  if (empty() || !std::isfinite(time)) {throw std::invalid_argument("Invalid MPC sample request");}
+  if (empty() || !std::isfinite(time)) {throw std::invalid_argument("局部参考轨迹采样时间无效");}
   ReferencePoint result;
   if (time >= duration() || knots_.size() == 1) {
     result.pos = knots_.back().position;
-    result.yaw = knots_.back().yaw;
+    result.heading_yaw = knots_.back().yaw;
+    for (size_t i = knots_.size(); i > 1; --i) {
+      const auto delta = knots_[i - 1].position - knots_[i - 2].position;
+      if (delta.squaredNorm() > 1e-18) {
+        result.path_tangent_yaw = std::atan2(delta.y(), delta.x());
+        break;
+      }
+    }
     return result;  // Hold the endpoint with zero feedforward velocity.
   }
   time = std::max(0.0, time);
@@ -104,8 +111,9 @@ ReferencePoint PathTrajectory::sample(double time) const
     std::clamp((a.speed * elapsed + 0.5 * acceleration * elapsed * elapsed) / ds, 0.0, 1.0) :
     elapsed / dt;
   result.pos = a.position + fraction * (b.position - a.position);
-  result.yaw = a.yaw + fraction * (b.yaw - a.yaw);
+  result.heading_yaw = a.yaw + fraction * (b.yaw - a.yaw);
   if (ds > 1e-9) {
+    result.path_tangent_yaw = std::atan2(b.position.y() - a.position.y(), b.position.x() - a.position.x());
     result.vel = (b.position - a.position) * (velocity / ds);
     result.yaw_rate = (b.yaw - a.yaw) * velocity / ds;
   } else {
@@ -116,7 +124,7 @@ ReferencePoint PathTrajectory::sample(double time) const
 
 double PathTrajectory::nearestTime(const State & state, double minimum_time) const
 {
-  if (empty()) {throw std::logic_error("MPC has no reference path");}
+  if (empty()) {throw std::logic_error("局部控制器没有参考路径");}
   double best_distance = std::numeric_limits<double>::infinity();
   double best_time = std::clamp(minimum_time, 0.0, duration());
   const Eigen::Vector2d position(state.x, state.y);

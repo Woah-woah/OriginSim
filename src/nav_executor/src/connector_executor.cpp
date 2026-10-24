@@ -233,7 +233,7 @@ void ConnectorExecutor::observePose(
     if (intersects(region, world, region.occupied ? config_.exit_hysteresis : 0.0)) {
       region.outside_since.reset();
       if (!region.occupied && log_) {
-        log_("Enter connector low-head region: " + region.id);
+        log_("进入需要低头通过的通道区域：" + region.id);
       }
       region.occupied = true;
     } else {
@@ -244,7 +244,7 @@ void ConnectorExecutor::observePose(
           config_.exit_debounce)
       {
         if (region.occupied && log_) {
-          log_("Leave connector low-head region: " + region.id);
+          log_("离开需要低头通过的通道区域：" + region.id);
         }
         region.occupied = false;
       }

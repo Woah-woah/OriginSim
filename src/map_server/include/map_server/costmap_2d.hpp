@@ -4,12 +4,15 @@
 #include <cmath>
 #include <cstddef>
 #include <mutex>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 #include "map_server/cost_values.hpp"
 
 namespace map_server
 {
+struct DistanceField;
+
 // Axis-aligned, row-major raw cost grid. Callers lock getMutex() for compound reads.
 class Costmap2D
 {
@@ -26,6 +29,7 @@ public:
     std::scoped_lock lock(mutex_, other.mutex_);
     width_ = other.width_; height_ = other.height_; resolution_ = other.resolution_;
     origin_x_ = other.origin_x_; origin_y_ = other.origin_y_; data_ = other.data_;
+    distance_field_ = other.distance_field_;
     return *this;
   }
   void resizeMap(unsigned int width, unsigned int height, double resolution,
@@ -39,6 +43,7 @@ public:
     std::lock_guard<mutex_t> lock(mutex_);
     width_ = width; height_ = height; resolution_ = resolution;
     origin_x_ = origin_x; origin_y_ = origin_y; data_.swap(data);
+    distance_field_.reset();
   }
   bool worldToMap(double wx, double wy, unsigned int & mx, unsigned int & my) const
   {
@@ -63,12 +68,16 @@ public:
   double getOriginY() const {return origin_y_;}
   unsigned char * getCharMap() {return data_.data();}
   const unsigned char * getCharMap() const {return data_.data();}
+  // 与 uint8 地图在同一个互斥锁下复制，EDT 在消费者之间共享只读。
+  std::shared_ptr<const DistanceField> distanceField() const {return distance_field_;}
+  void setDistanceField(std::shared_ptr<const DistanceField> field) {distance_field_ = std::move(field);}
   mutex_t * getMutex() const {return &mutex_;}
 
 private:
   unsigned int width_{0}, height_{0};
   double resolution_{1.0}, origin_x_{0.0}, origin_y_{0.0};
   std::vector<unsigned char> data_;
+  std::shared_ptr<const DistanceField> distance_field_;
   mutable mutex_t mutex_;
 };
 }  // namespace map_server

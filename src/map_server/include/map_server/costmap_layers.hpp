@@ -16,7 +16,9 @@ struct InflationOptions
 // Occupancy (-1, 0..100) is interpreted explicitly at this boundary.
 Costmap2D occupancyToCostmap(const nav_msgs::msg::OccupancyGrid & map,
   bool track_unknown, int lethal_threshold = 100, bool trinary = true);
-void inflate(Costmap2D & map, const InflationOptions & options);
+struct DistanceField;
+void inflate(Costmap2D & map, const InflationOptions & options,
+  const DistanceField * distances = nullptr);
 void clearFootprint(Costmap2D & map, double x, double y, double yaw,
   const Footprint & footprint);
 }  // namespace map_server

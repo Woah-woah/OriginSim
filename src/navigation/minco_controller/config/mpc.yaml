@@ -16,7 +16,6 @@ nav_executor:
       q_cross: 12.0
       # w * C_linearized(x,y)^2; sequential convex QPs, metres for distances.
       obstacle_weight: 30.0
-      obstacle_smoothing_distance: 0.2
       obstacle_trust_region: 0.15
       obstacle_iterations: 3
       vx_min: -1.0

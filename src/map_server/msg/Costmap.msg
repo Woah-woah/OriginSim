@@ -6,6 +6,11 @@ uint8 NO_INFORMATION=255
 std_msgs/Header header
 nav_msgs/MapMetaData info
 uint8[] data
+# 同一融合快照的米制 EDT 与未膨胀障碍；局部距离在 halo 范围后饱和。
+float32[] edt
+uint8[] obstacle_data
+float32 edt_max_distance
+uint64 obstacle_version
 bool current
 string robot_base_frame
 geometry_msgs/Point[] footprint

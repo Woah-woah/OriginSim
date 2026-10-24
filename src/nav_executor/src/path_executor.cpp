@@ -25,7 +25,7 @@ geometry_msgs::msg::Twist transformRobotVelocity(const geometry_msgs::msg::Twist
   const geometry_msgs::msg::TransformStamped & base_from_child)
 {
   if (!finiteTwist(speed)) {
-    throw std::invalid_argument("Odometry velocity is not finite");
+    throw std::invalid_argument("里程计速度含无效数值");
   }
   tf2::Transform transform;
   tf2::fromMsg(base_from_child.transform, transform);
@@ -42,7 +42,7 @@ geometry_msgs::msg::Twist transformRobotVelocity(const geometry_msgs::msg::Twist
   result.angular.y = angular.y();
   result.angular.z = angular.z();
   if (!finiteTwist(result)) {
-    throw std::runtime_error("Invalid transformed odometry velocity");
+    throw std::runtime_error("里程计速度转换到车体坐标系后无效");
   }
   return result;
 }
@@ -106,7 +106,7 @@ public:
       }
     }
     if (frequency_ > 1000.0 || odom_topic.empty() || cmd_topic.empty()) {
-      throw std::invalid_argument("Invalid PathExecutor frequency or topic");
+      throw std::invalid_argument("路径执行器的控制频率或话题配置无效");
     }
     cmd_pub_ = node->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, rclcpp::QoS(1));
     publishZero();
@@ -127,7 +127,7 @@ public:
               !finiteTwist(msg->twist.twist) ||
               (odom_ && stamp < rclcpp::Time(odom_->header.stamp, clock_->get_clock_type())))
           {
-            throw std::invalid_argument("Invalid or out-of-order odometry");
+            throw std::invalid_argument("里程计数据无效或时间顺序错误");
           }
           odom_ = *msg;
           odom_received_ = TaskManager::Clock::now();
@@ -178,7 +178,7 @@ public:
   void stop(const std::string & reason)
   {
     if (state_ == ExecutionState::RUNNING) {
-      RCLCPP_INFO(logger_, "Path execution stopped: %s", reason.c_str());
+      RCLCPP_INFO(logger_, "路径执行已停止，原因：%s", reason.c_str());
     }
     path_.reset();
     completion_wait_since_.reset();
@@ -195,7 +195,7 @@ public:
     if (had_path) {
       controller_.reset();
       state_ = ExecutionState::FAILED;
-      RCLCPP_WARN(logger_, "Path execution stopped: %s", reason.c_str());
+      RCLCPP_WARN(logger_, "路径执行已停止，原因：%s", reason.c_str());
       failure_(identity_, reason);
     }
   }
@@ -208,28 +208,28 @@ public:
     }
     if (!confirmation_(identity)) {
       RCLCPP_WARN(logger_,
-        "Ignoring unconfirmed path: goal_id=%lu plan_generation=%lu",
+        "忽略尚未确认的路径：目标编号=%lu，路径版本=%lu",
         static_cast<unsigned long>(identity.goal_id),
         static_cast<unsigned long>(identity.plan_generation));
       return false;
     }
-    stop("Replacing execution path");
+    stop("切换到新执行路径");
     identity_ = identity;
     try {
       if (path.poses.empty() || path.header.frame_id.empty()) {
-        throw std::invalid_argument("Cannot execute an empty path or frame");
+        throw std::invalid_argument("无法执行空路径或缺少坐标系的路径");
       }
       for (const auto & pose : path.poses) {
         if (!finitePose(pose.pose) ||
             (!pose.header.frame_id.empty() && pose.header.frame_id != path.header.frame_id))
         {
-          throw std::invalid_argument("Invalid pose or inconsistent frame in execution path");
+          throw std::invalid_argument("执行路径包含无效位姿或坐标系不一致");
         }
       }
       controller_.setPlan(path);
       path_ = path;
       RCLCPP_INFO(logger_,
-        "Executing full path: goal_id=%lu generation=%lu poses=%zu",
+        "开始执行完整路径：目标编号=%lu，路径版本=%lu，路径点数=%zu",
         static_cast<unsigned long>(identity_.goal_id),
         static_cast<unsigned long>(identity_.plan_generation),
         path.poses.size());
@@ -263,7 +263,7 @@ public:
     }
   }
 
-  geometry_msgs::msg::Twist readSpeed(const std::string & phase = "before_controller")
+  geometry_msgs::msg::Twist readSpeed(const std::string & phase = "求解前")
   {
     std::optional<nav_msgs::msg::Odometry> odom;
     TaskManager::Clock::time_point received;
@@ -279,13 +279,13 @@ public:
     if (!odom ||
         std::chrono::duration<double>(TaskManager::Clock::now() - received).count() > odom_timeout_)
     {
-      throw std::runtime_error("Odometry missing or receive timeout");
+      throw std::runtime_error("未收到里程计数据，或接收已超时");
     }
     try {
-      checkStamp(odom->header.stamp, odom_timeout_, "Odometry");
+      checkStamp(odom->header.stamp, odom_timeout_, "里程计");
     } catch (const std::runtime_error & exception) {
       throw std::runtime_error(
-        std::string(exception.what()) + " phase=" + phase + " receive_age=" +
+        std::string(exception.what()) + "，检查阶段=" + phase + "，距上次接收已过=" +
         std::to_string(
           std::chrono::duration<double>(TaskManager::Clock::now() - received).count()) +
         "s");
@@ -311,8 +311,8 @@ public:
     RCLCPP_WARN_THROTTLE(logger_,
       *clock_,
       2000,
-      "Goal awaiting completion: distance=%.3f/%.3f yaw_error=%.3f/%.3f "
-      "measured_speed=%.3f measured_wz=%.3f stopped_tolerance=%.3f",
+      "尚未满足到点条件：距离误差=%.3f米（允许%.3f米），朝向误差=%.3f弧度（允许%.3f弧度）；"
+      "实测速度=%.3f米/秒，实测角速度=%.3f弧度/秒，停止阈值=%.3f",
       distance,
       tolerances_.xy,
       std::abs(yaw_error),
@@ -333,33 +333,33 @@ public:
       return;
     }
     if (emergency_stop_) {
-      stop("Emergency stop latched");
+      stop("急停已触发");
       return;
     }
     if (!confirmation_(identity_)) {
-      stop("TaskManager revoked execution path");
+      stop("当前执行路径已被任务管理器撤销");
       return;
     }
     try {
       if (!global_ready_() || !costmap_->isCurrent()) {
-        throw std::runtime_error("Global or local costmap unavailable or not current");
+        throw std::runtime_error("全局或局部地图不可用，或地图数据已过期");
       }
       geometry_msgs::msg::PoseStamped pose;
       if (!costmap_->getRobotPose(pose)) {
-        throw std::runtime_error("Robot pose TF unavailable");
+        throw std::runtime_error("无法取得机器人当前位置的坐标变换");
       }
-      checkStamp(pose.header.stamp, tf_timeout_, "Robot TF", true);
+      checkStamp(pose.header.stamp, tf_timeout_, "机器人坐标变换", true);
       // 检查全局路径与局部里程计坐标系的变换
       const auto path_tf = costmap_->getTfBuffer()->lookupTransform(
         costmap_->getGlobalFrameID(), path_->header.frame_id, tf2::TimePointZero);
-      checkStamp(path_tf.header.stamp, tf_timeout_, "Path TF", true);
+      checkStamp(path_tf.header.stamp, tf_timeout_, "路径坐标变换", true);
       const auto speed = readSpeed();
       auto goal = path_->poses.back();
       goal.header.frame_id = path_->header.frame_id;
       goal.header.stamp = builtin_interfaces::msg::Time{};
       goal = costmap_->getTfBuffer()->transform(goal, costmap_->getGlobalFrameID());
       if (!finitePose(pose.pose) || !finitePose(goal.pose)) {
-        throw std::runtime_error("Robot or goal TF pose is invalid");
+        throw std::runtime_error("机器人或目标的坐标变换结果无效");
       }
       auto route_pose = pose;
       route_pose.header.stamp = builtin_interfaces::msg::Time{};
@@ -396,7 +396,7 @@ public:
         if (grid->getSizeInCellsX() < 3 || grid->getSizeInCellsY() < 3 ||
             !grid->worldToMap(pose.pose.position.x, pose.pose.position.y, mx, my))
         {
-          throw std::runtime_error("Robot outside usable local costmap");
+          throw std::runtime_error("机器人位置超出可用的局部地图");
         }
       }
       const auto began = TaskManager::Clock::now();
@@ -405,14 +405,14 @@ public:
             control_timeout_ ||
           !finiteTwist(command.twist))
       {
-        throw std::runtime_error("Controller command invalid or computation deadline exceeded");
+        throw std::runtime_error("控制器输出无效，或本次求解超过允许时间");
       }
       // 计算期间输入可能过期，发布前重新校验
-      checkStamp(pose.header.stamp, tf_timeout_, "Robot TF", true);
-      checkStamp(path_tf.header.stamp, tf_timeout_, "Path TF", true);
-      readSpeed("after_controller");
+      checkStamp(pose.header.stamp, tf_timeout_, "机器人坐标变换", true);
+      checkStamp(path_tf.header.stamp, tf_timeout_, "路径坐标变换", true);
+      readSpeed("求解后");
       if (!global_ready_() || !costmap_->isCurrent()) {
-        throw std::runtime_error("Costmap invalidated during controller computation");
+        throw std::runtime_error("控制计算期间地图已失效，拒绝发布速度");
       }
       // 在已确认的全局路径坐标系中上报有效反馈，监控回调可同步撤销路径
       observation_(identity_, route_pose, command.twist);

@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include "map_server/costmap_2d.hpp"
+#include "map_server/distance_field.hpp"
 #include "map_server/map_geometry.hpp"
 #include "map_server/msg/costmap.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -27,6 +28,8 @@ public:
   std::shared_ptr<tf2_ros::Buffer> getTfBuffer() {return tf_;}
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose);
   bool isCurrent() const;
+  Costmap2D snapshot() const;
+  bool isSnapshotCurrent(const Costmap2D & snapshot) const;
   rclcpp::Time snapshotStamp() const;
 
 private:

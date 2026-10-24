@@ -1,9 +1,9 @@
 #include "map_server/costmap_layers.hpp"
-#include <opencv2/imgproc.hpp>
+#include "map_server/distance_field.hpp"
 
 namespace map_server
 {
-void inflate(Costmap2D & map, const InflationOptions & options)
+void inflate(Costmap2D & map, const InflationOptions & options, const DistanceField * supplied)
 {
   if (!std::isfinite(options.radius) || options.radius < 0 ||
     !std::isfinite(options.inscribed_radius) || options.inscribed_radius < 0 ||
@@ -11,24 +11,19 @@ void inflate(Costmap2D & map, const InflationOptions & options)
   {throw std::invalid_argument("Invalid inflation parameters");}
   if (options.radius == 0) {return;}
   const int width = map.getSizeInCellsX(), height = map.getSizeInCellsY();
-  cv::Mat obstacles(height, width, CV_8UC1, cv::Scalar(255));
-  bool has_obstacle = false;
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
-      const auto cost = map.getCost(x, y);
-      if (cost == LETHAL_OBSTACLE || (options.inflate_around_unknown && cost == NO_INFORMATION)) {
-        obstacles.at<uint8_t>(y, x) = 0; has_obstacle = true;
-      }
-    }
-  }
-  if (!has_obstacle) {return;}
-  cv::Mat distances;
-  cv::distanceTransform(obstacles, distances, cv::DIST_L2, cv::DIST_MASK_PRECISE);
+  // 复用融合快照的 EDT；未知种子策略不同时才单独计算兼容膨胀距离。
+  DistanceField owned;
+  if (!supplied) {owned = computeDistanceField(map, options.inflate_around_unknown); supplied = &owned;}
+  if (!supplied->matches(map)) {throw std::invalid_argument("Inflation EDT geometry mismatch");}
+  const bool has_seed = std::any_of(supplied->obstacles.begin(), supplied->obstacles.end(),
+    [&](uint8_t cost) {return cost == LETHAL_OBSTACLE ||
+      (options.inflate_around_unknown && cost == NO_INFORMATION);});
+  if (!has_seed) {return;}
   // Nav2 rounds the inflation radius up to a whole cell.
   const double cell_radius = std::ceil(options.radius / map.getResolution());
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {
-      const double approximate = distances.at<float>(y, x);
+      const double approximate = supplied->distances[static_cast<size_t>(y) * width + x] / map.getResolution();
       // Lattice squared distances are integers; restore double precision before
       // thresholding and quantizing to match the uint8 inflation formula.
       const double cells = std::sqrt(std::round(approximate * approximate));

@@ -145,7 +145,7 @@ nav_executor:
       timeout: 0.3             # s，受全局规划总超时共同限制
       control_spacing: 0.4     # m，短共线控制点合并间距
       corridor_range: 1.0      # m，方形安全走廊最大范围
-      max_speed: 2.5          # m/s，仅用于时间分配
+      max_speed: 2.5           # m/s，仅用于时间分配
       max_acceleration: 2.2    # m/s^2，仅用于时间分配
       collision_iterations: 6
       topology_iterations: 3
@@ -163,10 +163,9 @@ nav_executor:
       Q: [5.0, 5.0, 2.0]
       R: [1.0, 1.0, 0.5]
       control_delta_weight: [2.0, 2.0, 0.5]
-      q_along: 3.0
-      q_cross: 12.0
+      q_along: 5.0         # 惩罚跟随
+      q_cross: 5.0         # 惩罚横移
       obstacle_weight: 30.0
-      obstacle_smoothing_distance: 0.2
       obstacle_trust_region: 0.15
       obstacle_iterations: 3
       vx_min: -1.7
@@ -187,7 +186,7 @@ nav_executor:
       reference_speed: 1.2
       reference_acceleration: 1.0
       reference_yaw_rate: 1.0
-      control_delay_compensation: 0.25
+      control_delay_compensation: 0.10
       output_delay: 0.025
       use_small_gyro_mode: true
       fixed_wz: 0.0
@@ -209,5 +208,5 @@ topology_planner:
       grid:
         tolerance: 0.2
         use_astar: false
-        allow_unknown: true
+        allow_unknown: false          # 与二值平滑器及碰撞复检保持一致
         use_final_approach_orientation: true

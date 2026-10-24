@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.8)
 project(map_server)
 
+# EDT 与浮点搜索用于实时导航，未指定构建类型时启用优化。
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -23,7 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME} "msg/Costmap.msg" "msg/DynamicObstacl
 rosidl_get_typesupport_target(typesupport_target ${PROJECT_NAME} rosidl_typesupport_cpp)
 
 add_library(origin_map_server_core SHARED src/map_geometry.cpp src/costmap_client.cpp
-  src/static_layer.cpp src/inflation_layer.cpp src/footprint_layer.cpp src/static_map_loader.cpp
+  src/distance_field.cpp src/static_layer.cpp src/inflation_layer.cpp src/footprint_layer.cpp src/static_map_loader.cpp
   src/dynamic_memory.cpp src/dynamic_layer.cpp)
 target_compile_features(origin_map_server_core PUBLIC cxx_std_17)
 target_include_directories(origin_map_server_core PUBLIC

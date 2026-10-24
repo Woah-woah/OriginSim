@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <vector>
 
 #include <Eigen/Core>
@@ -31,11 +32,21 @@ struct ReferencePoint
 {
   Eigen::Vector2d pos{0.0, 0.0};  // map系位置
   Eigen::Vector2d vel{0.0, 0.0};  // map系速度(前馈)
-  double yaw{0.0};                // 参考航向
+  double heading_yaw{0.0};        // 车体朝向参考，独立于平移方向
+  double path_tangent_yaw{0.0};   // 路径几何切线，用于沿程/横向误差
   double yaw_rate{0.0};           // 参考角速度(前馈)
 };
 
-// Supporting half-plane outside a lethal cell expanded by the collision radius.
+// QP 变量直接表示最终发送的全局速度；相位补偿在速度前馈目标内建模。
+struct CommandModel
+{
+  double phase{0.0};
+  double deadzone{0.0};
+  bool fixed_angular_velocity{false};
+  double fixed_wz{0.0};
+};
+
+// 有朝向的 Footprint 与原始障碍栅格之间的分离平面。
 struct SafetyPlane
 {
   Eigen::Vector2d normal{0.0, 0.0};
@@ -66,7 +77,7 @@ struct MPCConfig
 
   // 代价权重：Q(状态误差) / R(控制误差)
   // 状态采用 [x, y, yaw]，控制采用 [vx, vy, omega]
-  // Q_along/cross are rotated to align with the reference heading at each horizon step.
+  // Q_along/cross 随路径切线旋转，不使用车体朝向。
   Eigen::Vector3d Q{5.0, 5.0, 2.0};
   double q_along{3.0};   // weight along heading (lower → timing flexibility)
   double q_cross{12.0};  // weight cross-track (higher → precision)
@@ -91,11 +102,11 @@ struct MPCConfig
   double alpha_min{-4.0};
   double alpha_max{4.0};
 
-  // Squared normalized Costmap residual, linearized outside qpOASES.
+  // 归一化 EDT 距离代价的平方残差，在 qpOASES 外线性化。
   double obstacle_weight{30.0};
   double obstacle_trust_region{0.15};  // metres, per predicted x/y
   int obstacle_iterations{3};
-  // Reserve clearance for the measured-velocity delay projection at the next cycle.
+  // 未标定执行延迟的保守上界，和控制器的名义延迟共用同一配置。
   double safety_preview_time{0.0};
   double control_period{0.05};
 

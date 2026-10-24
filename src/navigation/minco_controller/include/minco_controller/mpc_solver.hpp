@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 #include <vector>
 
 #include <Eigen/Core>
@@ -16,6 +17,11 @@ public:
   // Evaluated only between QP solves. False means unavailable/invalid map data.
   using CostSampler = std::function<bool(const Eigen::Vector2d &, CostLinearization &)>;
 
+  using EnvelopeSampler = std::function<bool(
+    const State &, const Control &, std::vector<SafetyPlane> &)>;
+  using MotionSampler = std::function<bool(
+    const State &, const State &, std::vector<SafetyPlane> &)>;
+
   explicit MpcSolver(const MPCConfig & config);
 
   void setConfig(const MPCConfig & config);
@@ -25,22 +31,35 @@ public:
   // @param ref_traj 参考轨迹 (horizon 个点，若不足由插件层补齐)
   // @param out_u 输出控制 (map)
   // @param out_pred (可选) 输出预测轨迹
-  // @param sample_cost Cost and lethal-cell supporting planes, evaluated outside QP
-  // @param observed Undelayed pose anchoring first-command hold safety constraints
+  // @param sample_cost EDT 障碍软代价，在 QP 外查询
+  // @param observed 未补偿的观测状态，锚定 [0, delay] 延迟安全包络
+  // @param sample_envelope 对不确定延迟下的整个轮廓移动区域生成安全平面
+  // @param command_model 相位前馈、死区与固定角速度，均在 QP 内处理
+  // @param sample_motion 每段真实 Footprint 移动区域的安全平面
   // @return 是否求解成功
   bool solve(const State & curr,
     const std::vector<ReferencePoint> & ref_traj,
     Control & out_u,
     std::vector<State> * out_pred = nullptr,
     const CostSampler & sample_cost = {},
-    const State * observed = nullptr);
+    const State * observed = nullptr,
+    const EnvelopeSampler & sample_envelope = {},
+    const CommandModel & command_model = {},
+    const MotionSampler & sample_motion = {});
 
   void reset();
   int lastStatus() const {return last_status_;}
+  std::string lastStatusMessage() const;
 
   Eigen::Vector3d getLastControl() const { return last_u_global_; }
 
 private:
+  bool solveImpl(const State & curr, const std::vector<ReferencePoint> & ref_traj,
+    Control & out_u, std::vector<State> * out_pred, const CostSampler & sample_cost,
+    const State * observed, const EnvelopeSampler & sample_envelope, const MotionSampler & sample_motion);
+  CommandModel command_model_;
+  bool zero_first_translation_{false};
+
   bool solveOnce(const State & curr, const std::vector<ReferencePoint> & ref_traj,
     const std::vector<CostLinearization> & costs, Control & out_u,
     std::vector<State> * out_pred);

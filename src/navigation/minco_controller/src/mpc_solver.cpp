@@ -35,7 +35,7 @@ void MpcSolver::setConfig(const MPCConfig & config)
     !std::isfinite(config.control_period) || config.control_period <= 0.0 ||
     !std::isfinite(config.safety_preview_time) || config.safety_preview_time < 0.0 ||
     config.obstacle_iterations < 1 || config.obstacle_iterations > 10)
-  {throw std::invalid_argument("Invalid MPC discretization, weights or QP settings");}
+  {throw std::invalid_argument("局部控制的预测步长、权重或求解参数无效");}
   for (const auto & bounds : {std::pair{config.vx_min, config.vx_max},
     std::pair{config.vy_min, config.vy_max}, std::pair{config.omega_min, config.omega_max},
     std::pair{config.ax_min, config.ax_max}, std::pair{config.ay_min, config.ay_max},
@@ -43,7 +43,7 @@ void MpcSolver::setConfig(const MPCConfig & config)
   {
     if (!std::isfinite(bounds.first) || !std::isfinite(bounds.second) ||
       bounds.first > 0.0 || bounds.second < 0.0 || bounds.first >= bounds.second)
-    {throw std::invalid_argument("MPC bounds must be finite and contain zero");}
+    {throw std::invalid_argument("局部控制的速度和加速度上下限必须有效，并包含零");}
   }
   config_ = config;
   reset();
@@ -54,6 +54,22 @@ void MpcSolver::reset()
   last_u_global_.setZero();
   has_last_u_ = false;
   last_status_ = 0;
+}
+
+// 日志专用说明，不参与求解分支或安全判断。
+std::string MpcSolver::lastStatusMessage() const
+{
+  switch (last_status_) {
+    case 0: return "求解成功";
+    case -1: return "当前状态、参考轨迹或延迟预测数据无效";
+    case -2: return "预测位置无法取得有效地图或障碍距离数据";
+    case -3: return "未找到满足硬避障约束和安全包络的速度";
+    case -4: return "输出指令模型或安全包络配置无效";
+    case qpOASES::RET_MAX_NWSR_REACHED: return "达到求解迭代上限，尚未找到有效速度";
+    case qpOASES::RET_INIT_FAILED_INFEASIBILITY:
+      return "当前约束无法同时满足，找不到兼顾速度限制、避障和安全包络的速度";
+    default: return "求解器返回异常，未生成可执行速度";
+  }
 }
 
 void MpcSolver::buildStepModel(
@@ -104,7 +120,7 @@ bool MpcSolver::buildCondensedQP(const State & curr,
 
   for (int i = 0; i < N; ++i) {
     Eigen::Matrix<double, 3, 3> Bi;
-    buildStepModel(ref_traj[i].yaw, A, Bi);
+    buildStepModel(ref_traj[i].heading_yaw, A, Bi);
 
     // A_hat block: A^{i+1}
     Eigen::Matrix3d A_power = Eigen::Matrix3d::Identity();
@@ -122,7 +138,7 @@ bool MpcSolver::buildCondensedQP(const State & curr,
       }
 
       Eigen::Matrix<double, 3, 3> Bj;
-      buildStepModel(ref_traj[j].yaw, A, Bj);
+      buildStepModel(ref_traj[j].heading_yaw, A, Bj);
 
       B_hat.block<3, 3>(i * nx, j * nu) = A_ij * Bj;
     }
@@ -133,7 +149,7 @@ bool MpcSolver::buildCondensedQP(const State & curr,
   for (int i = 0; i < N; ++i) {
     X_ref(i * nx + 0) = ref_traj[i].pos.x();
     X_ref(i * nx + 1) = ref_traj[i].pos.y();
-    X_ref(i * nx + 2) = ref_traj[i].yaw;
+    X_ref(i * nx + 2) = ref_traj[i].heading_yaw;
   }
 
   // 参考控制堆叠 U_ref (直接使用全局速度)
@@ -151,13 +167,11 @@ bool MpcSolver::buildCondensedQP(const State & curr,
   Eigen::MatrixXd Q_bar = Eigen::MatrixXd::Zero(nX, nX);
   Eigen::MatrixXd R_bar = Eigen::MatrixXd::Zero(nU, nU);
   for (int i = 0; i < N; ++i) {
-    const double yaw_ref = ref_traj[i].yaw;
+    const double yaw_ref = ref_traj[i].path_tangent_yaw;
     const double c = std::cos(yaw_ref);
     const double s = std::sin(yaw_ref);
-    // Q_xy = R^T * diag(q_along, q_cross) * R  (R is 2D rotation by yaw_ref)
-    // R = [c, -s; s, c], so:
-    // Q_xy = [c*q_along*c + s*q_cross*s,   c*q_along*(-s) + s*q_cross*c;
-    //         (-s)*q_along*c + c*q_cross*s, (-s)*q_along*(-s) + c*q_cross*c]
+    // 路径切线 t=(c,s)，法向 n=(-s,c)：Q_xy=qa*t*t^T+qc*n*n^T。
+    // 朝向跟踪仅使用独立的 heading_yaw，不参与此处平移权重旋转。
     const double qa = config_.q_along;
     const double qc = config_.q_cross;
     Q_bar(i * nx + 0, i * nx + 0) = qa * c * c + qc * s * s;
@@ -168,6 +182,15 @@ bool MpcSolver::buildCondensedQP(const State & curr,
 
     R_bar.block<3, 3>(i * nu, i * nu) = config_.R.asDiagonal();
   }
+
+  // 保留原相位补偿的速度前馈倾向，但将最终速度直接作为 QP 变量。
+  // 等价于以原始速度 R(+phase)*u 计算输入残差；位置预测始终使用实际 u。
+  Eigen::Matrix3d phase = Eigen::Matrix3d::Identity();
+  phase(0, 0) = phase(1, 1) = std::cos(command_model_.phase);
+  phase(0, 1) = std::sin(command_model_.phase);
+  phase(1, 0) = -std::sin(command_model_.phase);
+  U_ref.head<3>() = phase * U_ref.head<3>().eval();
+  R_bar.block<3, 3>(0, 0) = phase * config_.R.asDiagonal() * phase.transpose();
 
   // d = A_hat * x0 - X_ref
   Eigen::Vector3d x0(curr.x, curr.y, curr.yaw);
@@ -223,6 +246,12 @@ bool MpcSolver::buildCondensedQP(const State & curr,
     ub(i * nu + 1) = config_.vy_max;
     lb(i * nu + 2) = config_.omega_min;
     ub(i * nu + 2) = config_.omega_max;
+    if (command_model_.fixed_angular_velocity) {
+      lb(i * nu + 2) = ub(i * nu + 2) = command_model_.fixed_wz;
+    }
+    if (i == 0 && zero_first_translation_) {
+      lb(0) = ub(0) = lb(1) = ub(1) = 0.0;
+    }
   }
 
   // 加速度约束（可选）：a_min <= (v_k - v_{k-1})/dt <= a_max
@@ -297,13 +326,52 @@ bool MpcSolver::buildCondensedQP(const State & curr,
 }
 
 bool MpcSolver::solve(const State & curr,
+  const std::vector<ReferencePoint> & ref_traj, Control & out_u,
+  std::vector<State> * out_pred, const CostSampler & sample_cost, const State * observed,
+  const EnvelopeSampler & sample_envelope, const CommandModel & command_model,
+  const MotionSampler & sample_motion)
+{
+  out_u = {};
+  if (out_pred) {out_pred->clear();}
+  if (!std::isfinite(command_model.phase) || !std::isfinite(command_model.deadzone) ||
+    command_model.deadzone < 0 || !std::isfinite(command_model.fixed_wz) ||
+    (command_model.fixed_angular_velocity &&
+    (command_model.fixed_wz < config_.omega_min || command_model.fixed_wz > config_.omega_max)) ||
+    (sample_cost && (!sample_motion || (observed && !sample_envelope))))
+  {last_status_ = -4; return false;}
+  command_model_ = command_model;
+  zero_first_translation_ = false;
+  Control accepted;
+  std::vector<State> prediction;
+  if (!solveImpl(curr, ref_traj, accepted, &prediction, sample_cost, observed, sample_envelope, sample_motion)) {
+    return false;
+  }
+  const double speed = std::hypot(accepted.vx, accepted.vy);
+  if (speed > 1e-10 && speed < command_model_.deadzone) {
+    // 死区必须进入 QP 后重新预测和检查，禁止求解完成后直接把速度改成零。
+    zero_first_translation_ = true;
+    if (!solveImpl(curr, ref_traj, accepted, &prediction, sample_cost, observed, sample_envelope, sample_motion)) {
+      return false;
+    }
+  }
+  out_u = accepted;
+  last_u_global_ = Eigen::Vector3d(out_u.vx, out_u.vy, out_u.omega);
+  has_last_u_ = true;
+  if (out_pred) {*out_pred = std::move(prediction);}
+  return true;
+}
+
+bool MpcSolver::solveImpl(const State & curr,
   const std::vector<ReferencePoint> & ref_traj,
-  Control & out_u,
-  std::vector<State> * out_pred, const CostSampler & sample_cost, const State * observed)
+  Control & out_u, std::vector<State> * out_pred, const CostSampler & sample_cost,
+  const State * observed, const EnvelopeSampler & sample_envelope, const MotionSampler & sample_motion)
 {
   out_u = Control{};
   if (out_pred) {out_pred->clear();}
-  if (observed && !Eigen::Vector2d(observed->x, observed->y).allFinite()) {
+  if (observed && (!Eigen::Matrix<double, 6, 1>(observed->x, observed->y, observed->yaw,
+    observed->vx, observed->vy, observed->omega).allFinite() ||
+    (Eigen::Vector2d(curr.x, curr.y) - Eigen::Vector2d(observed->x, observed->y) -
+    config_.safety_preview_time * Eigen::Vector2d(observed->vx, observed->vy)).norm() > 1e-8)) {
     last_status_ = -1;
     return false;
   }
@@ -337,29 +405,11 @@ bool MpcSolver::solve(const State & curr,
           if (!sample_cost(cost.position, cost) || !std::isfinite(cost.cost) ||
             cost.cost < 0.0 || !cost.gradient.allFinite()) {return false;}
           cost.position = Eigen::Vector2d(state.x, state.y);
+          // 平面由这一候选解的真实轮廓朝向和完整移动过程重建，不使用外接圆。
+          if (!sample_motion(prediction[i], state, cost.safety_planes)) {return false;}
           const double excess = cost.cost - reference_cost[i];
           cost.cost = std::max(0.0, excess);
           if (excess <= 0.0) {cost.gradient.setZero();}
-          if (i == 0 && observed && !cost.safety_planes.empty()) {
-            // The next measured pose starts at observed, not at the delayed
-            // solver initial state. Bound the whole command hold + latency
-            // sweep in this frame, so the next delay projection remains safe.
-            const Eigen::Vector2d origin(observed->x, observed->y);
-            const Eigen::Vector2d velocity(state.vx, state.vy);
-            const double hold = config_.control_period + config_.safety_preview_time;
-            const int samples = std::max(1, static_cast<int>(std::ceil(
-              hold * velocity.norm() / 0.02)));
-            for (int k = 1; k <= samples; ++k) {
-              const double time = hold * k / samples;
-              CostLinearization preview;
-              if (!sample_cost(origin + time * velocity, preview)) {return false;}
-              for (auto plane : preview.safety_planes) {
-                plane.preview_time = time - config_.dt;
-                plane.origin_offset = origin - Eigen::Vector2d(curr.x, curr.y);
-                cost.safety_planes.push_back(plane);
-              }
-            }
-          }
           for (const auto & plane : cost.safety_planes) {
             if (!plane.normal.allFinite() || plane.normal.squaredNorm() < 1e-12 ||
               !std::isfinite(plane.offset) || !std::isfinite(plane.preview_time) ||
@@ -367,17 +417,34 @@ bool MpcSolver::solve(const State & curr,
           }
           costs.push_back(cost);
           const Eigen::Vector2d error = cost.position - ref.pos;
-          const double along = std::cos(ref.yaw) * error.x() + std::sin(ref.yaw) * error.y();
-          const double cross = -std::sin(ref.yaw) * error.x() + std::cos(ref.yaw) * error.y();
-          const Eigen::Vector3d du(state.vx - ref.vel.x(), state.vy - ref.vel.y(),
-            state.omega - ref.yaw_rate);
+          const double along = std::cos(ref.path_tangent_yaw) * error.x() + std::sin(ref.path_tangent_yaw) * error.y();
+          const double cross = -std::sin(ref.path_tangent_yaw) * error.x() + std::cos(ref.path_tangent_yaw) * error.y();
+          Eigen::Vector3d actual(state.vx, state.vy, state.omega);
+          if (i == 0) {
+            const double c = std::cos(command_model_.phase), s = std::sin(command_model_.phase);
+            actual.head<2>() = Eigen::Vector2d(c * state.vx - s * state.vy,
+              s * state.vx + c * state.vy);
+          }
+          const Eigen::Vector3d du = actual - Eigen::Vector3d(ref.vel.x(), ref.vel.y(), ref.yaw_rate);
           const auto & prior = prediction[i];
           const Eigen::Vector3d delta_u = Eigen::Vector3d(state.vx, state.vy, state.omega) -
             (i == 0 ? previous_command : Eigen::Vector3d(prior.vx, prior.vy, prior.omega));
           objective += delta_u.dot(config_.control_delta_weight.asDiagonal() * delta_u);
           objective += config_.q_along * along * along + config_.q_cross * cross * cross +
-            config_.Q.z() * std::pow(state.yaw - ref.yaw, 2) +
+            config_.Q.z() * std::pow(state.yaw - ref.heading_yaw, 2) +
             du.dot(config_.R.asDiagonal() * du) + config_.obstacle_weight * cost.cost * cost.cost;
+        }
+        if (observed) {
+          std::vector<SafetyPlane> planes;
+          const auto & first = prediction[1];
+          const Control command{first.vx, first.vy, first.omega};
+          if (!sample_envelope(*observed, command, planes)) {return false;}
+          for (const auto & plane : planes) {
+            if (!plane.normal.allFinite() || !std::isfinite(plane.offset) ||
+              !std::isfinite(plane.preview_time) || !plane.origin_offset.allFinite() ||
+              plane.normal.squaredNorm() < 1e-12) {return false;}
+            costs.front().safety_planes.push_back(plane);
+          }
         }
         return std::isfinite(objective);
       };
@@ -401,6 +468,10 @@ bool MpcSolver::solve(const State & curr,
       Control candidate_control;
       std::vector<State> candidate;
       const bool best_is_safe = safe(best, costs);
+      // 基础 QP 已是跟踪/速度目标的最优解；若完整轮廓检查安全且障碍残差为零，
+      // 非负障碍代价不可能再改善目标。直接保留已认证解，避免重复求解和轮廓生成。
+      if (iteration == 0 && best_is_safe && std::all_of(costs.begin(), costs.end(),
+        [](const auto & cost) {return cost.cost == 0.0;})) {break;}
       if (!solveOnce(curr, ref_traj, costs, candidate_control, &candidate)) {
         if (best_is_safe) {last_status_ = 0; break;}
         return false;
@@ -423,8 +494,6 @@ bool MpcSolver::solve(const State & curr,
     if (!safe(best, costs)) {last_status_ = -3; return false;}
   }
   out_u = best_control;
-  last_u_global_ = Eigen::Vector3d(out_u.vx, out_u.vy, out_u.omega);
-  has_last_u_ = true;
   if (out_pred) {*out_pred = std::move(best);}
   return true;
 }
@@ -441,7 +510,8 @@ bool MpcSolver::solveOnce(const State & curr,
       curr.vx, curr.vy, curr.omega).allFinite()) {return false;}
   for (const auto & point : ref_traj) {
     if (!point.pos.allFinite() || !point.vel.allFinite() ||
-      !std::isfinite(point.yaw) || !std::isfinite(point.yaw_rate)) {return false;}
+      !std::isfinite(point.heading_yaw) || !std::isfinite(point.path_tangent_yaw) ||
+      !std::isfinite(point.yaw_rate)) {return false;}
   }
   const int N = config_.horizon;
   if (N <= 0) {
@@ -525,12 +595,12 @@ bool MpcSolver::solveOnce(const State & curr,
   last_status_ = static_cast<int>(ret);
   if (ret != qpOASES::SUCCESSFUL_RETURN) {
     if (ret == qpOASES::RET_MAX_NWSR_REACHED) {
-      std::cout << color_text::RED << "[MpcSolver] qpOASES Max NWSR Reached!" << color_text::RESET
+      std::cout << color_text::RED << "[局部控制求解器] 达到允许的求解迭代次数，尚未找到有效解" << color_text::RESET
                 << std::endl;
     } else if (ret == qpOASES::RET_INIT_FAILED_INFEASIBILITY) {
-      std::cout << color_text::RED << "[MpcSolver] qpOASES Infeasible!" << color_text::RESET << std::endl;
+      std::cout << color_text::RED << "[局部控制求解器] 当前约束无法同时满足，未找到可执行速度" << color_text::RESET << std::endl;
     } else {
-      std::cout << color_text::RED << "[MpcSolver] qpOASES Error Code: " << static_cast<int>(ret)
+      std::cout << color_text::RED << "[局部控制求解器] 求解器返回异常，状态码=" << static_cast<int>(ret)
                 << color_text::RESET << std::endl;
     }
     return false;
@@ -557,7 +627,7 @@ bool MpcSolver::solveOnce(const State & curr,
       const double uw = static_cast<double>(xOpt[static_cast<size_t>(3 * i + 2)]);
 
       // 使用 QP 构建时的线性化点 (reference yaw) 进行推演
-      buildStepModel(ref_traj[i].yaw, A, B);
+      buildStepModel(ref_traj[i].heading_yaw, A, B);
 
       double dx = B(0, 0) * ux + B(0, 1) * uy + B(0, 2) * uw;
       double dy = B(1, 0) * ux + B(1, 1) * uy + B(1, 2) * uw;

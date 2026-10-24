@@ -96,7 +96,7 @@ public:
         double base_link_angle = tf2::getYaw(odom_to_base_link.transform.rotation);
         double angle_diff = base_link_angle - tf2::getYaw(fake_q);
 
-        cmd_vel_after.angular.z = 0.0;
+        cmd_vel_after.angular.z = cmd_vel->angular.z;
         cmd_vel_after.linear.x = cmd_vel->linear.x * cos(angle_diff) + cmd_vel->linear.y * sin(angle_diff);
         cmd_vel_after.linear.y = -cmd_vel->linear.x * sin(angle_diff) + cmd_vel->linear.y * cos(angle_diff);
 

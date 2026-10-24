@@ -57,7 +57,6 @@ nav_executor:
       q_cross: 12.0
       # 障碍代价为权重乘线性化代价的平方，采用序列凸二次规划，距离单位为米
       obstacle_weight: 30.0
-      obstacle_smoothing_distance: 0.2
       obstacle_trust_region: 0.15
       obstacle_iterations: 3
       vx_min: -1.0

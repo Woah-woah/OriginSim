@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include "map_server/distance_field.hpp"
 
 namespace nav_executor
 {
@@ -19,6 +20,7 @@ std::optional<double> findPathObstacle(const nav_msgs::msg::Path & path,
   // 增加栅格半对角线余量以覆盖整个障碍栅格
   const double radius = robot_radius + grid.getResolution() * std::sqrt(0.5);
   const double resolution = grid.getResolution();
+  const auto field = grid.distanceField();
   double blocked_ahead = -1.0;
   double arc = 0.0;
   auto previous = path.poses.front().pose.position;
@@ -34,6 +36,11 @@ std::optional<double> findPathObstacle(const nav_msgs::msg::Path & path,
       const double ay = previous.y + (begin_s - arc) * uy;
       const double bx = previous.x + (end_s - arc) * ux;
       const double by = previous.y + (end_s - arc) * uy;
+      if (std::min(ax, bx) - robot_radius < grid.getOriginX() ||
+        std::min(ay, by) - robot_radius < grid.getOriginY() ||
+        std::max(ax, bx) + robot_radius >= grid.getOriginX() + grid.getSizeInCellsX() * resolution ||
+        std::max(ay, by) + robot_radius >= grid.getOriginY() + grid.getSizeInCellsY() * resolution)
+      {return std::max(0.0, begin_s - progress);}
       const auto lower = [](double value, double origin, double resolution) {
         return std::floor((value - origin) / resolution);
       };
@@ -55,7 +62,8 @@ std::optional<double> findPathObstacle(const nav_msgs::msg::Path & path,
           static_cast<double>(grid.getSizeInCellsY()) - 1));
       for (int y = y0; y <= y1 && blocked_ahead < 0.0; ++y) {
         for (int x = x0; x <= x1; ++x) {
-          if (grid.getCost(x, y) != map_server::LETHAL_OBSTACLE) {
+          const auto cost = field ? field->obstacles[static_cast<size_t>(y) * grid.getSizeInCellsX() + x] : grid.getCost(x, y);
+          if (cost != map_server::LETHAL_OBSTACLE && cost != map_server::NO_INFORMATION) {
             continue;
           }
           const double wx = grid.getOriginX() + (x + 0.5) * resolution;

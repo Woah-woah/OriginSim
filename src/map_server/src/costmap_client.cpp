@@ -16,7 +16,7 @@ CostmapClient::CostmapClient(const std::string & name, const rclcpp::NodeOptions
   listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_);
   subscription_ = create_subscription<msg::Costmap>(
     declare_parameter("costmap_topic", std::string("/global_costmap/costmap_raw")),
-    rclcpp::QoS(1).reliable().transient_local(), [this](msg::Costmap::ConstSharedPtr message) {
+    rclcpp::QoS(1).reliable().transient_local(), [this](msg::Costmap::UniquePtr message) {
       try {
         const auto & m = *message;
         const auto & p = m.info.origin.position;
@@ -35,7 +35,22 @@ CostmapClient::CostmapClient(const std::string & name, const rclcpp::NodeOptions
         {throw std::invalid_argument("Costmap message geometry or settings mismatch");}
         Costmap2D next(m.info.width, m.info.height, m.info.resolution, p.x, p.y);
         std::copy(m.data.begin(), m.data.end(), next.getCharMap());
+        auto field = std::make_shared<DistanceField>();
+        field->width = m.info.width; field->height = m.info.height;
+        field->resolution = m.info.resolution; field->origin_x = p.x; field->origin_y = p.y;
+        field->distances = std::move(message->edt); field->obstacles = std::move(message->obstacle_data);
+        field->max_distance = m.edt_max_distance; field->version = m.obstacle_version;
+        field->robot_radius = std::max(settings_.robot_radius,
+          calculateMinAndMaxDistances(settings_.footprint).second);
+        field->inflation_radius = m.inflation_radius;
+        field->cost_scaling_factor = m.cost_scaling_factor;
+        field->validate();
         const auto stamp = rclcpp::Time(m.header.stamp, get_clock()->get_clock_type());
+        field->stamp_ns = stamp.nanoseconds();
+        const double age = (now() - stamp).seconds();
+        if (m.current && (age < -0.1 || age > timeout_))
+        {throw std::invalid_argument("Stale or future EDT timestamp");}
+        next.setDistanceField(field);
         if (stamp.nanoseconds() < 0) {throw std::invalid_argument("Negative map timestamp");}
         std::lock_guard<Costmap2D::mutex_t> lock(*grid_.getMutex());
         grid_ = next; stamp_ = stamp;
@@ -45,6 +60,23 @@ CostmapClient::CostmapClient(const std::string & name, const rclcpp::NodeOptions
         RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "Rejected costmap: %s", e.what());
       }
     });
+}
+
+Costmap2D CostmapClient::snapshot() const
+{
+  std::lock_guard<Costmap2D::mutex_t> lock(*grid_.getMutex());
+  if (!isCurrent() || !grid_.distanceField()) {throw std::runtime_error("Map/EDT snapshot unavailable or stale");}
+  return grid_;
+}
+
+bool CostmapClient::isSnapshotCurrent(const Costmap2D & snapshot) const
+{
+  const auto field = snapshot.distanceField();
+  if (!field || !isCurrent()) {return false;}
+  const double age = (get_clock()->now() - rclcpp::Time(field->stamp_ns,
+    get_clock()->get_clock_type())).seconds();
+  return age >= -0.1 && age <= timeout_ &&
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - field->received_at).count() <= timeout_;
 }
 
 rclcpp::Time CostmapClient::snapshotStamp() const
