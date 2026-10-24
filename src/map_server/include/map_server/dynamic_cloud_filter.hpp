@@ -1,11 +1,11 @@
 #pragma once
 
-#include <string>
+#include "map_server/dynamic_memory.hpp"
 #include <Eigen/Geometry>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include "map_server/dynamic_memory.hpp"
+#include <string>
 
 namespace map_server
 {
@@ -28,18 +28,20 @@ struct DynamicDetection
 class DynamicCloudFilter
 {
 public:
-  DynamicCloudFilter(const DynamicFilterOptions & options, const std::string & static_pcd);
-  DynamicCloud::Ptr prepare(const DynamicCloud & cloud,
-    const Eigen::Isometry3d & tracking_from_cloud, const Eigen::Vector3d & robot) const;
-  DynamicDetection detect(const DynamicCloud & accumulated, const DynamicCloud & fresh,
-    const Eigen::Isometry3d & static_from_tracking, const Eigen::Vector3d & robot,
-    const DynamicGrid & grid);
-  size_t staticSize() const {return static_cloud_->size();}
+  DynamicCloudFilter(const DynamicFilterOptions &options, const std::string &static_pcd);
+  DynamicCloud::Ptr prepare(const DynamicCloud &cloud, const Eigen::Vector3d &robot_map) const;
+  DynamicDetection detect(const DynamicCloud &accumulated, const DynamicCloud &fresh,
+                          const Eigen::Vector3d &robot_map, const DynamicGrid &grid);
+  size_t staticSize() const
+  {
+    return static_cloud_->size();
+  }
+
 private:
-  bool inRoi(const pcl::PointXYZ & point, const Eigen::Vector3d & robot) const;
-  DynamicCloud::Ptr voxel(const DynamicCloud & cloud, double leaf) const;
+  bool inRoi(const pcl::PointXYZ &point, const Eigen::Vector3d &robot) const;
+  DynamicCloud::Ptr voxel(const DynamicCloud &cloud, double leaf) const;
   DynamicFilterOptions options_;
   DynamicCloud::Ptr static_cloud_;
   pcl::KdTreeFLANN<pcl::PointXYZ> static_tree_;
 };
-}  // namespace map_server
+} // namespace map_server

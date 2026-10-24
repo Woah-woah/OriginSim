@@ -53,7 +53,7 @@ void RouteMonitor::resetBlocked()
 std::optional<ReplanEvent> RouteMonitor::observeBlocked(const nav_msgs::msg::Path & path,
   PlanIdentity identity,
   const geometry_msgs::msg::PoseStamped & pose,
-  const map_server::Costmap2D & grid,
+  const map_server::MapView & grid,
   int64_t map_stamp,
   double robot_radius,
   TaskManager::Clock::time_point now)
@@ -62,8 +62,8 @@ std::optional<ReplanEvent> RouteMonitor::observeBlocked(const nav_msgs::msg::Pat
   if (!config_.enabled || !config_.path_blocked_enabled || path.poses.empty() ||
       path.header.frame_id.empty() || path.header.frame_id != pose.header.frame_id ||
       !std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(robot_radius) ||
-      robot_radius <= 0.0 || map_stamp <= 0 || grid.getSizeInCellsX() == 0 ||
-      grid.getSizeInCellsY() == 0)
+      robot_radius <= 0.0 || map_stamp <= 0 || grid.geometry().width == 0 ||
+      grid.geometry().height == 0)
   {
     resetBlocked();
     return std::nullopt;

@@ -1,9 +1,8 @@
-# Current measured obstacles only; no trajectory prediction.
-# data uses raw Costmap uint8 values (0 or 254), never occupancy probabilities.
+# Only current obstacle geometry, emitted when geometry changes. Health is in MapStatus.
 std_msgs/Header header
-builtin_interfaces/Time observation_stamp
-nav_msgs/MapMetaData info
-uint8[] data
-float32[] confidence
-bool current
-string status
+uint64 producer_id
+uint64 version
+uint64 input_version
+nav_msgs/MapMetaData cloud_info
+uint8[] cloud_mask
+map_server/ObstacleCircle[] circles

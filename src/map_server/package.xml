@@ -2,12 +2,14 @@
 <package format="3">
   <name>map_server</name>
   <version>0.1.0</version>
-  <description>Independent static and measured dynamic obstacles with raw uint8 costmaps.</description>
+  <description>Versioned map-frame binary obstacles, precise EDT and float navigation costs.</description>
   <maintainer email="todo@example.com">origin_nav</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
+  <depend>eigen</depend>
+  <test_depend>libgtest-dev</test_depend>
   <depend>rclcpp</depend>
   <depend>nav_msgs</depend>
   <depend>std_msgs</depend>

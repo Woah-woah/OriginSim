@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "map_server/costmap_client.hpp"
+#include "map_server/map_client.hpp"
 #include "map_server/footprint.hpp"
 #include "minco_controller/costmap_cost.hpp"
 #include "tf2/utils.h"
@@ -30,7 +30,7 @@ bool finitePose(const geometry_msgs::msg::Pose & pose)
 }
 
 void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
-  const std::string & name, const std::shared_ptr<map_server::CostmapClient> & costmap)
+  const std::string & name, const std::shared_ptr<map_server::MapClient> & costmap)
 {
   const auto node = parent.lock();
   if (solver_) {throw std::logic_error("局部控制器已经初始化，不能重复初始化");}
@@ -82,7 +82,7 @@ void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
   reference_speed_ = parameter("reference_speed", 0.6);
   reference_acceleration_ = parameter("reference_acceleration", 1.0);
   reference_yaw_rate_ = parameter("reference_yaw_rate", 1.0);
-  control_delay_ = parameter("control_delay_compensation", 0.25);
+  control_delay_ = parameter("control_delay_compensation", 0.10);
   config_.safety_preview_time = control_delay_;
   const double frequency = node->has_parameter("controller_frequency") ?
     node->get_parameter("controller_frequency").as_double() : 20.0;
@@ -111,8 +111,7 @@ void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
   if (control_delay_ > 2.0 || output_delay_ > 1.0 || !std::isfinite(fixed_wz_) ||
     fixed_wz_ < config_.omega_min || fixed_wz_ > config_.omega_max)
   {throw std::invalid_argument("控制延迟或固定角速度参数无效");}
-  // A fixed-frame facade such as fake_baselink drops angular commands. Its
-  // deployment uses the upstream small-gyro mode with fixed_wz=0.
+  // 控制坐标系可保持固定朝向，真实轮廓通过同一观测时刻的 TF 转入该坐标系。
   solver_ = std::make_unique<MpcSolver>(config_);
   node_ = parent;
   costmap_ = costmap;
@@ -160,9 +159,9 @@ void MincoMpcController::setPlan(const nav_msgs::msg::Path & path)
 
 void MincoMpcController::checkPrediction(
   const std::vector<State> & prediction, const std::string & stage,
-  const map_server::Costmap2D & snapshot) const
+  const map_server::MapView & snapshot, const map_server::Footprint & footprint) const
 {
-  const CostmapCost field(snapshot, costmap_->getRobotFootprint(), collision_margin_,
+  const CostmapCost field(snapshot, footprint, collision_margin_,
     config_.obstacle_trust_region);
   for (size_t i = 0; i < prediction.size(); ++i) {
     field.checkMotion(prediction[i ? i - 1 : 0], prediction[i],
@@ -243,14 +242,15 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   }
   Control control;
   std::vector<State> prediction;
-  // Snapshot construction locks the grid, then releases it before optimization.
-  // Positions, gradients and controls all use the local Costmap global frame.
-  const auto & footprint = costmap_->getRobotFootprint();
-  const auto snapshot = costmap_->snapshot();
+  // 只复制不可变视图指针；距离、原始障碍与硬安全检查全程使用同一个地图版本。
+  const auto footprint = costmap_->footprintInBaseFrame(pose.header.stamp);
+  const auto captured = costmap_->view();
+  if (!costmap_->isCurrent(*captured)) {throw std::runtime_error("局部地图快照无效或过期");}
+  const auto & snapshot = *captured;
   const CostmapCost field(snapshot, footprint, collision_margin_, config_.obstacle_trust_region);
   // This segment is fixed by measured velocity and cannot be repaired by U.
   try {
-    checkPrediction({observed, current}, "延迟期间按当前实测速度预测", snapshot);
+    checkPrediction({observed, current}, "延迟期间按当前实测速度预测", snapshot, footprint);
   } catch (const std::exception & trigger) {
     // 诊断与停车检查统一使用同一快照、同一 Footprint 和同一安全余量。
     try {
@@ -258,13 +258,13 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
           try {field.checkPose(state, "轮廓位姿检查"); return std::string("安全");}
           catch (const std::exception & error) {return std::string(error.what());}
         };
-      const auto paired = snapshot.distanceField();
+      const auto paired = snapshot.derivedMaps();
       const bool generated = costmap_->get_parameter("footprint").as_string().empty();
       RCLCPP_WARN(node->get_logger(),
         "延迟预测轮廓诊断：地图版本=%llu，时间戳=%lld纳秒，坐标系=%s，延迟=%.3f秒；"
         "实测速度=(%.4f,%.4f)米/秒，角速度=%.4f弧度/秒，轮廓来源=%s，顶点数=%zu，安全余量=%.4f米；"
         "整个移动过程检查未通过，原因=%s",
-        static_cast<unsigned long long>(paired->version), static_cast<long long>(paired->stamp_ns),
+        static_cast<unsigned long long>(paired->version), static_cast<long long>(static_cast<int64_t>(snapshot.status().stamp_s * 1e9)),
         pose.header.frame_id.c_str(), control_delay_, observed.vx, observed.vy, observed.omega,
         generated ? "按半径生成的近似轮廓（含已有外扩）" : "配置的车体轮廓（含已有外扩）",
         footprint.size(), collision_margin_, trigger.what());
@@ -301,16 +301,16 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   }
   // QP 已输出最终全局速度；不再在求解后做相位旋转、限幅或死区截断。
   prediction.insert(prediction.begin(), observed);
-  checkPrediction(prediction, "预测轨迹检查", snapshot);
+  checkPrediction(prediction, "预测轨迹检查", snapshot, footprint);
   State next = current;
   next.x += control.vx * config_.dt;
   next.y += control.vy * config_.dt;
   next.yaw += control.omega * config_.dt;
-  checkPrediction({current, next}, "最终输出指令检查", snapshot);
+  checkPrediction({current, next}, "最终输出指令检查", snapshot, footprint);
   // 同时覆盖平移和转动，以及 [0, delay] 内所有执行延迟，不再使用外接圆。
   field.checkEnvelope(observed, control, control_delay_, config_.control_period,
     "指令保持期间的轮廓安全检查");
-  if (!costmap_->isSnapshotCurrent(snapshot)) {throw std::runtime_error("求解期间局部地图或距离场已过期，拒绝输出本次速度");}
+  if (!costmap_->isCurrent(snapshot)) {throw std::runtime_error("求解期间局部地图或距离场已过期，拒绝输出本次速度");}
   geometry_msgs::msg::TwistStamped command;
   command.header.stamp = node->now();
   command.header.frame_id = costmap_->getBaseFrameID();

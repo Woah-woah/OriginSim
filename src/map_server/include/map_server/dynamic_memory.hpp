@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <unordered_map>
 #include <vector>
 
@@ -10,27 +10,37 @@ namespace map_server
 struct DynamicCell
 {
   int x, y;
-  bool operator==(const DynamicCell & other) const {return x == other.x && y == other.y;}
+  bool operator==(const DynamicCell &other) const
+  {
+    return x == other.x && y == other.y;
+  }
 };
 struct DynamicCellHash
 {
-  size_t operator()(const DynamicCell & cell) const
+  size_t operator()(const DynamicCell &cell) const
   {
     return static_cast<size_t>((static_cast<uint64_t>(static_cast<uint32_t>(cell.x)) << 32) |
-           static_cast<uint32_t>(cell.y));
+                               static_cast<uint32_t>(cell.y));
   }
 };
 struct DynamicGrid
 {
-  int x, y;  // Origin in fixed world-lattice cells, including negative coordinates.
+  int x, y; // Origin in fixed world-lattice cells, including negative coordinates.
   unsigned int width, height;
   double resolution;
-  size_t size() const {return static_cast<size_t>(width) * height;}
-  bool contains(const DynamicCell & cell) const
-  {return cell.x >= x && cell.y >= y && cell.x < x + static_cast<int>(width) &&
-         cell.y < y + static_cast<int>(height);}
-  size_t index(const DynamicCell & cell) const
-  {return static_cast<size_t>(cell.y - y) * width + static_cast<size_t>(cell.x - x);}
+  size_t size() const
+  {
+    return static_cast<size_t>(width) * height;
+  }
+  bool contains(const DynamicCell &cell) const
+  {
+    return cell.x >= x && cell.y >= y && cell.x < x + static_cast<int>(width) &&
+           cell.y < y + static_cast<int>(height);
+  }
+  size_t index(const DynamicCell &cell) const
+  {
+    return static_cast<size_t>(cell.y - y) * width + static_cast<size_t>(cell.x - x);
+  }
 };
 struct DynamicMemoryOptions
 {
@@ -50,14 +60,18 @@ struct DynamicSnapshot
 class DynamicMemory
 {
 public:
-  explicit DynamicMemory(const DynamicMemoryOptions & options);
+  explicit DynamicMemory(const DynamicMemoryOptions &options);
   void clear();
   // Returns false on a ROS clock rollback and clears all memory.
   bool advance(double time, double steady_time);
   // Each independently timestamped frame contributes at most one hit per cell.
-  void observe(const std::vector<DynamicCell> & cells, double time, double steady_time);
-  DynamicSnapshot snapshot(const DynamicGrid & grid);
-  size_t size() const {return cells_.size();}
+  void observe(const std::vector<DynamicCell> &cells, double time, double steady_time);
+  DynamicSnapshot snapshot(const DynamicGrid &grid);
+  size_t size() const
+  {
+    return cells_.size();
+  }
+
 private:
   struct Evidence
   {
@@ -69,4 +83,4 @@ private:
   double time_{0}, steady_time_{0}, observation_time_{0};
   bool initialized_{false}, observed_{false};
 };
-}  // namespace map_server
+} // namespace map_server

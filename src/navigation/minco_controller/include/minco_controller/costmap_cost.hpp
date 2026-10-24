@@ -7,6 +7,7 @@
 #include <string>
 
 #include "map_server/distance_field.hpp"
+#include "map_server/map_view.hpp"
 #include "map_server/footprint.hpp"
 #include "minco_controller/mpc_types.hpp"
 
@@ -213,14 +214,14 @@ inline std::vector<std::vector<Point>> convexParts(const map_server::Footprint &
 class CostmapCost
 {
 public:
-  CostmapCost(const map_server::Costmap2D & grid, const map_server::Footprint & footprint,
+  CostmapCost(const map_server::MapView & grid, const map_server::Footprint & footprint,
     double collision_margin, double trust_region = 0.15)
-  : field_(grid.distanceField()), parts_(collision_geometry::convexParts(footprint)),
+  : field_(grid.derivedMaps()), parts_(collision_geometry::convexParts(footprint)),
     margin_(collision_margin), trust_region_(trust_region)
   {
-    if (!field_ || !field_->matches(grid) || !std::isfinite(margin_) || margin_ < 0 ||
+    if (!grid.ready() || !field_ || !std::isfinite(margin_) || margin_ < 0 ||
       !std::isfinite(trust_region_) || trust_region_ <= 0 ||
-      grid.getSizeInCellsX() < 3 || grid.getSizeInCellsY() < 3)
+      grid.geometry().width < 3 || grid.geometry().height < 3)
     {throw std::invalid_argument("Footprint 避障需要有效的地图快照、车体轮廓及安全余量");}
     for (const auto & part : parts_) {
       for (const auto & p : part) {vertex_extent_ = std::max(vertex_extent_, p.norm());}
@@ -230,22 +231,22 @@ public:
   float getDistance(double x, double y) const
   {
     map_server::DistanceSample value;
-    if (!field_->sample(x, y, value)) {throw std::out_of_range("无法在该位置查询有效障碍距离");}
+    if (!map_server::sampleDistance(*field_, x, y, value)) {throw std::out_of_range("无法在该位置查询有效障碍距离");}
     return value.distance;
   }
   Eigen::Vector2d getGradient(double x, double y) const
   {
     map_server::DistanceSample value;
-    if (!field_->sample(x, y, value)) {throw std::out_of_range("无法在该位置查询有效距离梯度");}
+    if (!map_server::sampleDistance(*field_, x, y, value)) {throw std::out_of_range("无法在该位置查询有效距离梯度");}
     return {value.dx, value.dy};
   }
 
   bool sample(const Eigen::Vector2d & position, CostLinearization & result) const
   {
     map_server::DistanceSample value;
-    if (!field_->sample(position.x(), position.y(), value)) {return false;}
-    const auto penalty = map_server::distancePenalty(value.distance, field_->robot_radius,
-      field_->inflation_radius, field_->cost_scaling_factor);
+    if (!map_server::sampleDistance(*field_, position.x(), position.y(), value)) {return false;}
+    const auto penalty = map_server::distancePenalty(value.distance, field_->robot_radius_m,
+      field_->inflation_radius_m, field_->cost_scaling_factor);
     result.position = position; result.cost = penalty.cost;
     result.gradient = penalty.derivative * Eigen::Vector2d(value.dx, value.dy);
     result.safety_planes.clear();
@@ -397,14 +398,14 @@ private:
                 minimumProjection(part, normal, yaw), vertex.time - dt, vertex.origin - base});
             }
           };
-        add({1, 0}, field_->origin_x);
-        add({-1, 0}, -(field_->origin_x + field_->width * field_->resolution));
-        add({0, 1}, field_->origin_y);
-        add({0, -1}, -(field_->origin_y + field_->height * field_->resolution));
+        add({1, 0}, field_->geometry.origin_x);
+        add({-1, 0}, -(field_->geometry.origin_x + field_->geometry.width * field_->geometry.resolution));
+        add({0, 1}, field_->geometry.origin_y);
+        add({0, -1}, -(field_->geometry.origin_y + field_->geometry.height * field_->geometry.resolution));
         const double reach = margin + std::sqrt(2.0) * trust_region_;
         return visitObstacles(patch.body, reach, [&](int x, int y) {
-            const Point lower(field_->origin_x + x * field_->resolution, field_->origin_y + y * field_->resolution);
-            auto separation = collision_geometry::square(patch.body, lower, field_->resolution);
+            const Point lower(field_->geometry.origin_x + x * field_->geometry.resolution, field_->geometry.origin_y + y * field_->geometry.resolution);
+            auto separation = collision_geometry::square(patch.body, lower, field_->geometry.resolution);
             if (separation.squared_distance > reach * reach) {return true;}
             if (separation.squared_distance < 1e-20) {
               // 种子移动区域穿过障碍时，从该段起始轮廓选择安全侧，仍由同一 Footprint 决定。
@@ -412,11 +413,11 @@ private:
               const Point center = v.origin + v.time * Point(command.vx, command.vy);
               std::vector<Point> anchor;
               for (const auto & p : part) {anchor.push_back(center + rotate(p, v.heading + v.time * command.omega));}
-              separation = collision_geometry::square(anchor, lower, field_->resolution);
+              separation = collision_geometry::square(anchor, lower, field_->geometry.resolution);
             }
             if (separation.squared_distance < 1e-20) {return false;}
             const Point normal = (separation.polygon - separation.obstacle).normalized();
-            const double support = normal.dot(lower) + field_->resolution *
+            const double support = normal.dot(lower) + field_->geometry.resolution *
               (std::max(0.0, normal.x()) + std::max(0.0, normal.y()));
             add(normal, support);
             return true;
@@ -430,18 +431,17 @@ private:
     const bool valid = patches(vertices, command, [&](const Patch & patch, const std::vector<Point> &) {
         const double margin = margin_ + patch.error;
         for (const auto & p : patch.body) {
-          if (p.x() - margin < field_->origin_x || p.y() - margin < field_->origin_y ||
-            p.x() + margin >= field_->origin_x + field_->width * field_->resolution ||
-            p.y() + margin >= field_->origin_y + field_->height * field_->resolution)
+          if (p.x() - margin < field_->geometry.origin_x || p.y() - margin < field_->geometry.origin_y ||
+            p.x() + margin >= field_->geometry.origin_x + field_->geometry.width * field_->geometry.resolution ||
+            p.y() + margin >= field_->geometry.origin_y + field_->geometry.height * field_->geometry.resolution)
           {throw std::runtime_error(stage + "：车体轮廓及安全余量超出地图范围");}
         }
         return visitObstacles(patch.body, margin, [&](int x, int y) {
-            const Point lower(field_->origin_x + x * field_->resolution, field_->origin_y + y * field_->resolution);
-            const auto separation = collision_geometry::square(patch.body, lower, field_->resolution);
+            const Point lower(field_->geometry.origin_x + x * field_->geometry.resolution, field_->geometry.origin_y + y * field_->geometry.resolution);
+            const auto separation = collision_geometry::square(patch.body, lower, field_->geometry.resolution);
             if (separation.squared_distance <= margin * margin) {
-              const auto raw = field_->obstacles[static_cast<size_t>(y) * field_->width + x];
               throw std::runtime_error(stage + "：车体轮廓与" +
-                std::string(raw == map_server::NO_INFORMATION ? "未知区域" : "障碍栅格") +
+                std::string("障碍或未知栅格") +
                 "相交或净空不足，轮廓间距=" + std::to_string(std::sqrt(separation.squared_distance)) +
                 "米，安全余量=" + std::to_string(margin_) + "米，转动检查误差上界=" +
                 std::to_string(patch.error) + "米，栅格索引=(" + std::to_string(x) + "," + std::to_string(y) + ")");
@@ -457,23 +457,23 @@ private:
   {
     Point lower = polygon.front(), upper = lower;
     for (const auto & p : polygon) {lower = lower.cwiseMin(p); upper = upper.cwiseMax(p);}
-    const double r = field_->resolution;
+    const double r = field_->geometry.resolution;
     const auto index = [&](double v, double origin, int count) {
         return static_cast<int>(std::clamp(std::floor((v - origin) / r), 0.0, static_cast<double>(count - 1)));
       };
-    const int x0 = std::max(0, index(lower.x() - margin, field_->origin_x, field_->width) - 1);
-    const int y0 = std::max(0, index(lower.y() - margin, field_->origin_y, field_->height) - 1);
-    const int x1 = index(upper.x() + margin, field_->origin_x, field_->width);
-    const int y1 = index(upper.y() + margin, field_->origin_y, field_->height);
+    const int x0 = std::max(0, index(lower.x() - margin, field_->geometry.origin_x, field_->geometry.width) - 1);
+    const int y0 = std::max(0, index(lower.y() - margin, field_->geometry.origin_y, field_->geometry.height) - 1);
+    const int x1 = index(upper.x() + margin, field_->geometry.origin_x, field_->geometry.width);
+    const int y1 = index(upper.y() + margin, field_->geometry.origin_y, field_->geometry.height);
     for (int y = y0; y <= y1; ++y) {
       for (int x = x0; x <= x1; ++x) {
-        const auto raw = field_->obstacles[static_cast<size_t>(y) * field_->width + x];
-        if ((raw == map_server::LETHAL_OBSTACLE || raw == map_server::NO_INFORMATION) && !visitor(x, y)) {return false;}
+        const auto raw = field_->fused_obstacles.data[static_cast<size_t>(y) * field_->geometry.width + x];
+        if ((raw != 0) && !visitor(x, y)) {return false;}
       }
     }
     return true;
   }
-  std::shared_ptr<const map_server::DistanceField> field_;
+  std::shared_ptr<const map_server::DerivedMaps> field_;
   std::vector<std::vector<Point>> parts_;
   double margin_, trust_region_, vertex_extent_{0};
 };

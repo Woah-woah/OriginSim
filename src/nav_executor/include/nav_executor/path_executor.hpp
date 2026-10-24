@@ -5,7 +5,7 @@
 #include <string>
 
 #include "nav_executor/task_manager.hpp"
-#include "map_server/costmap_client.hpp"
+#include "map_server/map_client.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 
 namespace nav_executor
@@ -35,7 +35,7 @@ public:
   using Observation = std::function<void(
     PlanIdentity, const geometry_msgs::msg::PoseStamped &, const geometry_msgs::msg::Twist &)>;
   PathExecutor(const rclcpp::Node::SharedPtr & node,
-    std::shared_ptr<map_server::CostmapClient> local_costmap,
+    std::shared_ptr<map_server::MapClient> local_costmap,
     std::function<bool()> global_map_ready,
     Failure failure,
     Success success,

@@ -3,7 +3,7 @@
 #include <functional>
 #include <string>
 
-#include "map_server/costmap_2d.hpp"
+#include "map_server/map_view.hpp"
 #include "topology_global_planner/topology_plan.hpp"
 
 namespace minimum_jerk_smoother
@@ -36,7 +36,7 @@ public:
   using Validate = std::function<bool(const Plan &)>;
   explicit Smoother(Config config = {});
   Result smooth(
-    const Plan & original, const map_server::Costmap2D & map, double body_radius,
+    const Plan & original, const map_server::MapView & map, double body_radius,
     Validate topology_valid, Cancel cancelled = []() { return false; }) const;
 
 private:

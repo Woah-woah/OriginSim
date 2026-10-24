@@ -1,17 +1,23 @@
-dynamic_map:
+map_server:
   ros__parameters:
     use_sim_time: true
-    enabled: true
-    cloud_topic: /cloud_registered
-    static_pcd: "scans_map_zmax3.pcd"
-    static_pcd_frame: map  # PCD 本身的坐标系，必须与实际地图一致
-    tracking_frame: odom  # 累积和记忆使用固定、重力对齐的坐标系
+    global_frame: map
     robot_base_frame: base_link_fake
-    resolution: 0.05
+    footprint_frame: base_link
+    robot_radius: 0.15
+    footprint: ''
+    footprint_padding: 0.01
+    track_unknown_space: true
+    inflation_radius: 0.55
+    cost_scaling_factor: 5.0
+    safety_margin: 0.0  # 额外路径余量仍由原有规划/平滑配置施加，避免重复。
+    grid_margin_factor: 0.7071067811865476
     update_frequency: 10.0
-    input_timeout: 0.5  # ROS 时间及接收墙钟任一超时，动态层失效
+    dynamic_obstacles_enabled: false
+    cloud_topic: /cloud_registered
+    static_pcd: "rmuc2026.pcd"
+    cloud_timeout: 0.5
     tf_wait_timeout: 0.15
-    processing_timeout: 0.25
     max_cloud_points: 200000
     max_accumulated_points: 500000
     accumulate_frames: 4
@@ -19,7 +25,7 @@ dynamic_map:
     roi:
       min_radius: 0.4
       max_radius: 8.0
-      min_z: -0.45  # 相对机器人原点，沿 tracking_frame 的竖直轴
+      min_z: 0.0
       max_z: 0.8
     voxel_size: 0.03
     static_voxel_size: 0.05
@@ -27,9 +33,9 @@ dynamic_map:
     sor:
       neighbors: 12
       stddev_multiplier: 2.0
-    min_density_per_m2: 400.0  # 单个 Voxel 点可成为候选，持续观测由置信度确认
-    component_connection_distance: 0.55  # m，只用于连通域分组
-    min_component_area: 0.0075  # m²，8 邻域连通域
+    min_density_per_m2: 400.0
+    component_connection_distance: 0.55
+    min_component_area: 0.0075
     memory:
       hit_rate: 5.0
       decay_rate: 0.7
@@ -37,71 +43,20 @@ dynamic_map:
       off_threshold: 0.25
       obstacle_timeout: 1.0
       maximum_evidence_dt: 0.2
-    debug_clouds: false
 
-# Standalone map producer defaults; startup uses bringup/params/nav2_params.yaml.
-map_server:
+map_client:
   ros__parameters:
-    use_sim_time: true
-    yaml_filename: ''
-    frame_id: map
-    map_topic: /map
-global_costmap:
-  ros__parameters:
-    dynamic_obstacles:
-      enabled: true
-      topic: /dynamic_map/obstacles_raw
-      message_timeout: 0.5
-      observation_timeout: 0.6
     use_sim_time: true
     global_frame: map
     robot_base_frame: base_link_fake
+    footprint_frame: base_link
     robot_radius: 0.15
     footprint: ''
     footprint_padding: 0.01
     track_unknown_space: true
     inflation_radius: 0.55
-    cost_scaling_factor: 10.0
-    map_topic: /map
-    rolling_window: false
-    footprint_clearing_enabled: true
-    lethal_cost_threshold: 100
-    trinary_costmap: true
-    inflate_unknown: false
-    inflate_around_unknown: false
-    update_frequency: 10.0
-    publish_frequency: 5.0
+    cost_scaling_factor: 5.0
+    require_cloud: false  # 与当前关闭的动态检测对应；启用动态检测时必须同步改为 true。
+    require_radar: false
+    map_timeout: 1.0
     transform_tolerance: 0.5
-    costmap_topic: /global_costmap/costmap_raw
-    costmap_timeout: 1.0
-local_costmap:
-  ros__parameters:
-    dynamic_obstacles:
-      enabled: true
-      topic: /dynamic_map/obstacles_raw
-      message_timeout: 0.5
-      observation_timeout: 0.6
-    use_sim_time: true
-    global_frame: odom
-    robot_base_frame: base_link_fake
-    robot_radius: 0.15
-    footprint: ''
-    footprint_padding: 0.01
-    track_unknown_space: false
-    inflation_radius: 0.55
-    cost_scaling_factor: 10.0
-    map_topic: /map
-    rolling_window: true
-    footprint_clearing_enabled: true
-    lethal_cost_threshold: 100
-    trinary_costmap: true
-    inflate_unknown: false
-    inflate_around_unknown: false
-    update_frequency: 10.0
-    publish_frequency: 5.0
-    transform_tolerance: 0.5
-    costmap_topic: /local_costmap/costmap_raw
-    costmap_timeout: 1.0
-    width: 9.0
-    height: 9.0
-    resolution: 0.05

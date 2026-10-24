@@ -1,4 +1,5 @@
 #include "nav_executor/path_executor.hpp"
+#include "nav_executor/odometry_observation.hpp"
 
 #include <cmath>
 #include <atomic>
@@ -71,7 +72,7 @@ class PathExecutor::Impl
 {
 public:
   Impl(const rclcpp::Node::SharedPtr & node,
-    std::shared_ptr<map_server::CostmapClient> costmap,
+    std::shared_ptr<map_server::MapClient> costmap,
     std::function<bool()> global_ready,
     Failure failure,
     Success success,
@@ -129,10 +130,19 @@ public:
           {
             throw std::invalid_argument("里程计数据无效或时间顺序错误");
           }
+          if (odom_ && (odom_->child_frame_id != msg->child_frame_id ||
+              odom_->header.frame_id != msg->header.frame_id)) {odom_history_.clear();}
+          if (!odom_history_.empty() && odom_history_.back().header.stamp == msg->header.stamp) {
+            odom_history_.back() = *msg;
+          } else {odom_history_.push_back(*msg);}
+          while (odom_history_.size() > 2 && (odom_history_.size() > 256 ||
+              (stamp - rclcpp::Time(odom_history_.front().header.stamp,
+              clock_->get_clock_type())).seconds() > odom_timeout_)) {odom_history_.pop_front();}
           odom_ = *msg;
           odom_received_ = TaskManager::Clock::now();
         } catch (const std::exception & exception) {
           odom_.reset();
+          odom_history_.clear();
           // 错误处理与控制器重置交由串行控制回调执行
           odom_error_ = exception.what();
         }
@@ -263,7 +273,8 @@ public:
     }
   }
 
-  geometry_msgs::msg::Twist readSpeed(const std::string & phase = "求解前")
+  geometry_msgs::msg::Twist readSpeed(const std::string & phase = "求解前",
+    builtin_interfaces::msg::Time * observation = nullptr)
   {
     std::optional<nav_msgs::msg::Odometry> odom;
     TaskManager::Clock::time_point received;
@@ -290,12 +301,34 @@ public:
           std::chrono::duration<double>(TaskManager::Clock::now() - received).count()) +
         "s");
     }
-    if (odom->child_frame_id == costmap_->getBaseFrameID()) {
-      return odom->twist.twist;
+    // 求解后的调用只验证新鲜度，不使用返回值，无需再次做坐标变换。
+    if (!observation) {return odom->twist.twist;}
+    int64_t shared_time = observationNanoseconds(odom->header.stamp);
+    const auto limit = [&](const builtin_interfaces::msg::Time & stamp) {
+        const int64_t ns = observationNanoseconds(stamp);
+        if (ns > 0) {shared_time = std::min(shared_time, ns);}
+      };
+    limit(*observation);
+    if (odom->child_frame_id != costmap_->getBaseFrameID()) {
+      const auto common = costmap_->getTfBuffer()->lookupTransform(
+        costmap_->getBaseFrameID(), odom->child_frame_id, tf2::TimePointZero);
+      limit(common.header.stamp);
     }
+    const rclcpp::Time time(shared_time, clock_->get_clock_type());
+    *observation = time;
+    checkStamp(*observation, odom_timeout_, "共同观测时间的里程计");
+    std::optional<geometry_msgs::msg::Twist> sampled;
+    {
+      std::lock_guard<std::mutex> lock(odom_mutex_);
+      sampled = interpolateOdometryTwist(odom_history_, shared_time, odom_timeout_);
+    }
+    if (!sampled || !finiteTwist(*sampled)) {
+      throw std::runtime_error("TF 与里程计尚无共同有效时间，拒绝外推实测速度");
+    }
+    if (odom->child_frame_id == costmap_->getBaseFrameID()) {return *sampled;}
     const auto transform = costmap_->getTfBuffer()->lookupTransform(
-      costmap_->getBaseFrameID(), odom->child_frame_id, tf2::TimePointZero);
-    return transformRobotVelocity(odom->twist.twist, transform);
+      costmap_->getBaseFrameID(), odom->child_frame_id, time);
+    return transformRobotVelocity(*sampled, transform);
   }
 
   void reportCompletionWait(
@@ -348,12 +381,16 @@ public:
       if (!costmap_->getRobotPose(pose)) {
         throw std::runtime_error("无法取得机器人当前位置的坐标变换");
       }
+      auto observation = pose.header.stamp;
+      const auto speed = readSpeed("求解前", &observation);
+      if (!costmap_->getRobotPose(pose, observation)) {
+        throw std::runtime_error("无法取得机器人当前位置的坐标变换");
+      }
       checkStamp(pose.header.stamp, tf_timeout_, "机器人坐标变换", true);
       // 检查全局路径与局部里程计坐标系的变换
       const auto path_tf = costmap_->getTfBuffer()->lookupTransform(
         costmap_->getGlobalFrameID(), path_->header.frame_id, tf2::TimePointZero);
       checkStamp(path_tf.header.stamp, tf_timeout_, "路径坐标变换", true);
-      const auto speed = readSpeed();
       auto goal = path_->poses.back();
       goal.header.frame_id = path_->header.frame_id;
       goal.header.stamp = builtin_interfaces::msg::Time{};
@@ -388,16 +425,9 @@ public:
         }
         return;
       }
-      auto * grid = costmap_->getCostmap();
-      {
-        std::unique_lock<map_server::Costmap2D::mutex_t> lock(*grid->getMutex());
-        unsigned int mx;
-        unsigned int my;
-        if (grid->getSizeInCellsX() < 3 || grid->getSizeInCellsY() < 3 ||
-            !grid->worldToMap(pose.pose.position.x, pose.pose.position.y, mx, my))
-        {
-          throw std::runtime_error("机器人位置超出可用的局部地图");
-        }
+      const auto grid = costmap_->view();
+      if (!costmap_->isCurrent(*grid) || !grid->cell({pose.pose.position.x, pose.pose.position.y})) {
+        throw std::runtime_error("机器人位置超出可用地图或地图已过期");
       }
       const auto began = TaskManager::Clock::now();
       auto command = controller_.computeVelocityCommands(pose, speed);
@@ -435,7 +465,7 @@ public:
   }
 
   rclcpp::Node::WeakPtr node_;
-  std::shared_ptr<map_server::CostmapClient> costmap_;
+  std::shared_ptr<map_server::MapClient> costmap_;
   std::function<bool()> global_ready_;
   Failure failure_;
   Success success_;
@@ -456,6 +486,7 @@ public:
   std::optional<nav_msgs::msg::Path> path_;
   std::mutex odom_mutex_;
   std::optional<nav_msgs::msg::Odometry> odom_;
+  std::deque<nav_msgs::msg::Odometry> odom_history_;
   std::string odom_error_;
   rclcpp::CallbackGroup::SharedPtr odom_group_;
   TaskManager::Clock::time_point odom_received_{};
@@ -467,7 +498,7 @@ public:
 };
 
 PathExecutor::PathExecutor(const rclcpp::Node::SharedPtr & node,
-  std::shared_ptr<map_server::CostmapClient> local_costmap,
+  std::shared_ptr<map_server::MapClient> local_costmap,
   std::function<bool()> global_map_ready,
   Failure failure,
   Success success,

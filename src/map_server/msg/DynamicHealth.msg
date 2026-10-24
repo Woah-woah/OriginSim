@@ -1,0 +1,14 @@
+uint8 VALID=0
+uint8 STALE=1
+uint8 MISSING=2
+uint8 ERROR=3
+std_msgs/Header header
+uint8 cloud
+uint8 radar_allies
+uint8 radar_enemies
+float64 cloud_observation_age_s
+float64 ally_observation_age_s
+float64 enemy_observation_age_s
+bool self_filter_verified
+bool radar_time_degraded
+bool map_error

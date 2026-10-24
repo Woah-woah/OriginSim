@@ -36,7 +36,7 @@ nav_executor:
       reference_speed: 0.6
       reference_acceleration: 1.0
       reference_yaw_rate: 1.0
-      control_delay_compensation: 0.25
+      control_delay_compensation: 0.10
       output_delay: 0.025
       use_small_gyro_mode: true
       fixed_wz: 0.0

@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "map_server/costmap_layers.hpp"
+#include "map_server/map_view.hpp"
 #include "tdt/minimumSnap.hpp"
 
 namespace minimum_jerk_smoother
@@ -126,7 +126,7 @@ Smoother::Smoother(Config config) : config_(config)
   }
 }
 
-Result Smoother::smooth(const Plan & original, const map_server::Costmap2D & map,
+Result Smoother::smooth(const Plan & original, const map_server::MapView & map,
   double body_radius, Validate topology_valid, Cancel cancelled) const
 {
   Result fallback{original, false, "disabled"};
@@ -139,7 +139,7 @@ Result Smoother::smooth(const Plan & original, const map_server::Costmap2D & map
   try {
     if (!std::isfinite(body_radius) || body_radius <= 0 || !topology_valid ||
         original.full_path.poses.size() < 2 || original.segments.empty() ||
-        map.getSizeInCellsX() < 3 || map.getSizeInCellsY() < 3 || interrupted()) {
+        map.geometry().width < 3 || map.geometry().height < 3 || interrupted()) {
       return fallback;
     }
     for (const auto & segment : original.segments) {
@@ -149,33 +149,18 @@ Result Smoother::smooth(const Plan & original, const map_server::Costmap2D & map
       }
     }
     // 与前端共用地图语义；额外膨胀覆盖障碍栅格面积和多项式采样间隙。
-    auto safe = map;
-    const double resolution = map.getResolution();
+    const double resolution = map.geometry().resolution;
     const double padding = body_radius + 2.0 * resolution;
-    map_server::InflationOptions inflation;
-    inflation.radius = padding;
-    inflation.inscribed_radius = padding;
-    inflation.inflate_around_unknown = true;
-    inflation.inflate_unknown = true;
-    map_server::inflate(safe, inflation);
-    tdt::MinimumSnap::Map binary(safe.getSizeInCellsY(), safe.getSizeInCellsX());
-    for (unsigned int y = 0; y < safe.getSizeInCellsY(); ++y) {
-      if (interrupted()) {
-        return fallback;
-      }
-      for (unsigned int x = 0; x < safe.getSizeInCellsX(); ++x) {
-        const double wx = safe.getOriginX() + (x + 0.5) * resolution;
-        const double wy = safe.getOriginY() + (y + 0.5) * resolution;
-        const bool border =
-          wx - safe.getOriginX() < padding || wy - safe.getOriginY() < padding ||
-          safe.getOriginX() + safe.getSizeInCellsX() * resolution - wx < padding ||
-          safe.getOriginY() + safe.getSizeInCellsY() * resolution - wy < padding;
-        binary(y, x) =
-          !border && safe.getCost(x, y) < map_server::INSCRIBED_INFLATED_OBSTACLE ? 255 : 0;
+    const auto blocked = map.clearanceMask(padding);
+    tdt::MinimumSnap::Map binary(map.geometry().height, map.geometry().width);
+    for (unsigned int y = 0; y < map.geometry().height; ++y) {
+      if (interrupted()) {return fallback;}
+      for (unsigned int x = 0; x < map.geometry().width; ++x) {
+        binary(y, x) = blocked.data[static_cast<size_t>(y) * map.geometry().width + x] ? 0 : 255;
       }
     }
     tdt::MinimumSnap solver;
-    solver.setMap(binary, resolution, safe.getOriginX(), safe.getOriginY());
+    solver.setMap(binary, resolution, map.geometry().origin_x, map.geometry().origin_y);
     solver.setOrder(6);  // 六个系数，即五次多项式。
     solver.setMaxDx(3);  // 最小化 jerk，跨全部 NORMAL/CONNECTOR 保证 C2 连续。
     solver.setStrictCollision(true);

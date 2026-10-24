@@ -17,8 +17,8 @@
 #include "nav_executor/path_executor.hpp"
 #include "nav_executor/route_monitor.hpp"
 #include "nav_executor/path_collision.hpp"
-#include "map_server/costmap_layers.hpp"
-#include "map_server/costmap_client.hpp"
+#include "map_server/map_view.hpp"
+#include "map_server/map_client.hpp"
 #include "rclcpp/parameter_map.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/u_int64.hpp"
@@ -40,7 +40,7 @@ void requestShutdown(int)
 namespace nav_executor
 {
 // 代价地图生产端与客户端共用导航配置
-rclcpp::NodeOptions costmapClientOptions(
+rclcpp::NodeOptions mapClientOptions(
   const std::string & filename, const std::string & producer, bool use_sim_time)
 {
   if (filename.empty()) {
@@ -50,7 +50,19 @@ rclcpp::NodeOptions costmapClientOptions(
   auto parameters = rclcpp::parameters_from_map(
     rclcpp::parameter_map_from_yaml_file(filename, source_name.c_str()), source_name.c_str());
   if (parameters.empty()) {
-    throw std::invalid_argument("Missing costmap settings for " + producer + " in " + filename);
+    throw std::invalid_argument("缺少地图客户端配置：" + producer + " in " + filename);
+  }
+  const auto config = YAML::LoadFile(filename);
+  const bool dynamic_required = config["map_server"]["ros__parameters"]["dynamic_obstacles_enabled"].as<bool>(false);
+  if (dynamic_required) {
+    bool found = false;
+    for (auto & parameter : parameters) {
+      if (parameter.get_name() == "require_cloud") {
+        parameter = rclcpp::Parameter("require_cloud", true);
+        found = true;
+      }
+    }
+    if (!found) {parameters.emplace_back("require_cloud", true);}
   }
   // 启动时的时钟覆盖配置同步应用于进程内客户端
   bool clock_found = false;
@@ -121,8 +133,8 @@ void validateTopology(const std::string & filename)
 class NavExecutor : public rclcpp::Node
 {
 public:
-  NavExecutor(std::shared_ptr<map_server::CostmapClient> costmap,
-    const std::shared_ptr<map_server::CostmapClient> & local_costmap)
+  NavExecutor(std::shared_ptr<map_server::MapClient> costmap,
+    const std::shared_ptr<map_server::MapClient> & local_costmap)
       : Node("nav_executor"), costmap_(std::move(costmap)),
         tasks_(declare_parameter("goal_tolerance", 0.02),
           declare_parameter("retry_delay", 1.0),
@@ -272,7 +284,7 @@ public:
       costmap_->getTfBuffer(),
       &snapshot_,
       global_frame_,
-      costmap_->getBaseFrameID());
+      costmap_->getBaseFrameID(), "TopoPlanner", path_clearance_);
     planner_executor_.add_node(planner_node_);
     worker_ = std::make_unique<PathPlanner>(
       [this](const PlanningRequest & request, PathPlanner::CancelChecker cancelled) {
@@ -286,33 +298,15 @@ public:
         const auto deadline =
           TaskManager::Clock::now() + std::chrono::duration<double>(planning_timeout_);
         // 所有拓扑分段共用同一快照，实时地图继续更新
-        snapshot_ = costmap_->snapshot();
-        if (snapshot_.getSizeInCellsX() < 3 || snapshot_.getSizeInCellsY() < 3) {
+        snapshot_ = *costmap_->view();
+        if (snapshot_.geometry().width < 3 || snapshot_.geometry().height < 3) {
           throw std::runtime_error("全局地图尚无可用数据");
         }
         // 保留原始快照，避免平滑时重复膨胀车体余量
         const auto smoothing_map = snapshot_;
-        // 在规划线程的私有快照上膨胀，预留与碰撞校验一致的车体余量
-        map_server::InflationOptions clearance;
-        clearance.radius = path_clearance_ + 2.0 * snapshot_.getResolution();
-        clearance.inscribed_radius = clearance.radius;
-        clearance.inflate_unknown = true;
-        clearance.inflate_around_unknown = true;
-        map_server::inflate(snapshot_, clearance, snapshot_.distanceField().get());
-        // 与二值平滑器相同的边界余量，避免搜索得到车体越界的路径。
-        const auto nx = snapshot_.getSizeInCellsX(), ny = snapshot_.getSizeInCellsY();
-        const double resolution = snapshot_.getResolution();
-        for (unsigned int y = 0; y < ny; ++y) {
-          for (unsigned int x = 0; x < nx; ++x) {
-            const double edge = std::min({x + 0.5, y + 0.5, nx - x - 0.5, ny - y - 0.5});
-            if (edge * resolution < clearance.radius &&
-              snapshot_.getCost(x, y) < map_server::INSCRIBED_INFLATED_OBSTACLE)
-            {snapshot_.setCost(x, y, map_server::INSCRIBED_INFLATED_OBSTACLE);}
-          }
-        }
         auto timed_cancel = [this, cancelled, deadline]() {
           return cancelled() || !rclcpp::ok() || TaskManager::Clock::now() >= deadline ||
-            !costmap_->isSnapshotCurrent(snapshot_);
+            !costmap_->isCurrent(snapshot_);
         };
         auto path = planner_->plan(start, request.goal, request.active_connector, timed_cancel);
         if (TaskManager::Clock::now() >= deadline) {
@@ -506,9 +500,8 @@ public:
         const bool current_result = result->identity == tasks_.identity();
         auto original_path = result->original_path;
         if (result->identity == tasks_.identity() && !result->plan.full_path.poses.empty()) {
-          auto * grid = costmap_->getCostmap();
-          std::lock_guard<map_server::Costmap2D::mutex_t> lock(*grid->getMutex());
-          if (!costmap_->isCurrent() || result->plan.full_path.header.frame_id != global_frame_ ||
+          const auto grid = costmap_->view();
+          if (!costmap_->isCurrent(*grid) || result->plan.full_path.header.frame_id != global_frame_ ||
               !pathIsClear(result->plan.full_path, *grid, path_clearance_))
           {
             result->plan.full_path.poses.clear();
@@ -537,7 +530,7 @@ public:
     publishTask();
   }
 
-  void initializeExecutor(const std::shared_ptr<map_server::CostmapClient> & local_costmap)
+  void initializeExecutor(const std::shared_ptr<map_server::MapClient> & local_costmap)
   {
     executor_ = std::make_unique<PathExecutor>(
       shared_from_this(),
@@ -546,7 +539,6 @@ public:
         if (!ready_) {
           return false;
         }
-        std::unique_lock<map_server::Costmap2D::mutex_t> lock(*costmap_->getCostmap()->getMutex());
         return costmap_->isCurrent();
       },
       [this](PlanIdentity identity, const std::string & error) {
@@ -651,9 +643,8 @@ private:
     }
     std::optional<ReplanEvent> event;
     {
-      auto * grid = costmap_->getCostmap();
-      std::lock_guard<map_server::Costmap2D::mutex_t> lock(*grid->getMutex());
-      if (!costmap_->isCurrent()) {
+      const auto grid = costmap_->view();
+      if (!costmap_->isCurrent(*grid)) {
         monitor_->resetBlocked();
         return;
       }
@@ -665,7 +656,7 @@ private:
         tasks_.identity(),
         *pose,
         *grid,
-        costmap_->snapshotStamp().nanoseconds(),
+        static_cast<int64_t>(grid->status().stamp_s * 1e9),
         radius,
         now);
     }
@@ -769,7 +760,7 @@ private:
     }
   }
 
-  std::shared_ptr<map_server::CostmapClient> costmap_;
+  std::shared_ptr<map_server::MapClient> costmap_;
   TaskManager tasks_;
   std::unique_ptr<ConnectorExecutor> connector_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pitch_pub_;
@@ -789,7 +780,7 @@ private:
   double path_clearance_{0.0};
   double connector_entry_clearance_{0.0};
   std::atomic<bool> ready_{false};
-  map_server::Costmap2D snapshot_;
+  map_server::MapView snapshot_;
   rclcpp::Node::SharedPtr planner_node_;
   rclcpp::executors::SingleThreadedExecutor planner_executor_;
   std::unique_ptr<topology_global_planner::TopologyGlobalPlanner> planner_;
@@ -822,16 +813,14 @@ int main(int argc, char ** argv)
     const auto params_file = config->declare_parameter("navigation_params_file", std::string{});
     const bool use_sim_time = config->get_parameter("use_sim_time").as_bool();
     config.reset();
-    auto global = std::make_shared<map_server::CostmapClient>("global_costmap_client",
-      nav_executor::costmapClientOptions(params_file, "global_costmap", use_sim_time));
-    auto local = std::make_shared<map_server::CostmapClient>("local_costmap_client",
-      nav_executor::costmapClientOptions(params_file, "local_costmap", use_sim_time));
+    auto global = std::make_shared<map_server::MapClient>("navigation_map_client",
+      nav_executor::mapClientOptions(params_file, "map_client", use_sim_time));
+    auto local = global;  // 所有消费者共享一个不可变地图接收器，不分别订阅不同时间的地图。
     auto node = std::make_shared<nav_executor::NavExecutor>(global, local);
     node->initializeExecutor(local);
     // 控制计算期间独立接收里程计与快照，默认回调组串行处理任务和控制接口
     rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 4);
     executor.add_node(global);
-    executor.add_node(local);
     executor.add_node(node);
     auto spinning = std::async(std::launch::async, [&executor]() {
       executor.spin();
@@ -844,7 +833,6 @@ int main(int argc, char ** argv)
     spinning.get();
     executor.remove_node(node);
     node.reset(); // 先停止规划再销毁订阅端栅格
-    executor.remove_node(local);
     executor.remove_node(global);
   } catch (const std::exception & exception) {
     RCLCPP_ERROR(rclcpp::get_logger("nav_executor"), "%s", exception.what());
