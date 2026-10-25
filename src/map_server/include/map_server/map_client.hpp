@@ -19,6 +19,7 @@ public:
   std::shared_ptr<const MapView> view() const;
   bool isCurrent() const;
   bool isCurrent(const MapView &view) const;
+  bool isUpdating() const;
   const MapSettings &settings() const
   {
     return settings_;

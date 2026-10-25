@@ -7,10 +7,12 @@
 
 namespace nav_executor
 {
-TaskManager::TaskManager(double goal_tolerance, double retry_delay, double replan_cooldown)
-    : goal_tolerance_(goal_tolerance)
+TaskManager::TaskManager(double goal_tolerance, double retry_delay,
+  double replan_cooldown, int max_planning_failures)
+    : goal_tolerance_(goal_tolerance), max_planning_failures_(max_planning_failures)
 {
-  if (!std::isfinite(goal_tolerance) || goal_tolerance < 0.0 || !std::isfinite(retry_delay) ||
+  if (max_planning_failures < 1 || !std::isfinite(goal_tolerance) || goal_tolerance < 0.0 ||
+      !std::isfinite(retry_delay) ||
       retry_delay <= 0.0 || !std::isfinite(replan_cooldown) || replan_cooldown < 0.0)
   {
     throw std::invalid_argument(
@@ -31,6 +33,9 @@ bool TaskManager::setGoal(const geometry_msgs::msg::PoseStamped & goal)
   {
     return false;
   }
+  recovery_attempts_ = 0;
+  planning_failures_ = 0;
+  recovery_allowed_at_ = {};
   goal_ = goal;
   ++identity_.goal_id;
   next_route_plan_at_ = Clock::time_point{};
@@ -71,7 +76,8 @@ void TaskManager::cancel()
 std::optional<PlanningRequest> TaskManager::nextRequest(bool map_ready, Clock::time_point now)
 {
   if (!goal_ || state_ == TaskState::PLANNING || state_ == TaskState::PATH_READY ||
-      state_ == TaskState::SUCCEEDED || now < retry_at_)
+      state_ == TaskState::SUCCEEDED || state_ == TaskState::RECOVERING ||
+      state_ == TaskState::TERMINAL_FAILED || now < retry_at_)
   {
     return std::nullopt;
   }
@@ -175,7 +181,7 @@ bool TaskManager::accept(PlanningResult result, Clock::time_point now)
     plan_ = {};
     resetProgress();
     retry_at_ = now + retry_delay_;
-    state_ = TaskState::FAILED;
+    state_ = ++planning_failures_ >= max_planning_failures_ ? TaskState::TERMINAL_FAILED : TaskState::FAILED;
   } else {
     plan_ = std::move(result.plan);
     resetProgress();
@@ -209,6 +215,10 @@ const char * TaskManager::stateName(TaskState state)
     return "PLANNING";
   case TaskState::PATH_READY:
     return "PATH_READY";
+  case TaskState::RECOVERING:
+    return "RECOVERING";
+  case TaskState::TERMINAL_FAILED:
+    return "TERMINAL_FAILED";
   case TaskState::SUCCEEDED:
     return "SUCCEEDED";
   case TaskState::FAILED:
@@ -228,7 +238,51 @@ bool TaskManager::executionFailed(
   resetProgress();
   error_ = error;
   retry_at_ = now + retry_delay_;
-  state_ = TaskState::FAILED;
+  state_ = ++planning_failures_ >= max_planning_failures_ ?
+    TaskState::TERMINAL_FAILED : TaskState::FAILED;
+  return true;
+}
+
+// Recovery 保留目标和通道机构区域；旧导航路径在此状态不能输出控制。
+bool TaskManager::beginRecovery(PlanIdentity identity, Clock::time_point now, int max_attempts)
+{
+  if (!isPlanConfirmed(identity)) {return false;}
+  if (recovery_attempts_ >= static_cast<unsigned int>(max_attempts) || now < recovery_allowed_at_) {
+    terminalFailure(identity, "Recovery 尝试耗尽或冷却期再次卡住");
+    return false;
+  }
+  ++recovery_attempts_;
+  state_ = TaskState::RECOVERING;
+  return true;
+}
+
+bool TaskManager::recoveryConfirmed(PlanIdentity identity) const
+{
+  return goal_ && state_ == TaskState::RECOVERING && identity == identity_;
+}
+
+bool TaskManager::terminalFailure(PlanIdentity identity, const std::string & error)
+{
+  if (!goal_ || identity != identity_) {return false;}
+  ++identity_.plan_generation;
+  state_ = TaskState::TERMINAL_FAILED;
+  error_ = error;
+  plan_ = {};
+  resetProgress();
+  return true;
+}
+
+bool TaskManager::finishRecovery(PlanIdentity identity, bool success, const std::string & error,
+  Clock::time_point now, double cooldown)
+{
+  if (!recoveryConfirmed(identity)) {return false;}
+  if (!success) {return terminalFailure(identity, error);}
+  recovery_allowed_at_ = now + std::chrono::duration_cast<Clock::duration>(
+    std::chrono::duration<double>(cooldown));
+  // 脱困允许退出原通道，重新由拓扑规划器判断区域和后续通行方向。
+  active_connector_.reset();
+  replan();
+  retry_at_ = now;
   return true;
 }
 

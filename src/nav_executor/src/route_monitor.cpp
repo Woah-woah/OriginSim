@@ -1,5 +1,7 @@
 #include "nav_executor/route_monitor.hpp"
-#include "nav_executor/path_collision.hpp"
+#include "minco_controller/trajectory_safety.hpp"
+#include "tf2/utils.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -55,14 +57,13 @@ std::optional<ReplanEvent> RouteMonitor::observeBlocked(const nav_msgs::msg::Pat
   const geometry_msgs::msg::PoseStamped & pose,
   const map_server::MapView & grid,
   int64_t map_stamp,
-  double robot_radius,
+  const map_server::Footprint & footprint,
   TaskManager::Clock::time_point now)
 {
   const auto & position = pose.pose.position;
   if (!config_.enabled || !config_.path_blocked_enabled || path.poses.empty() ||
       path.header.frame_id.empty() || path.header.frame_id != pose.header.frame_id ||
-      !std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(robot_radius) ||
-      robot_radius <= 0.0 || map_stamp <= 0 || grid.geometry().width == 0 ||
+      !std::isfinite(position.x) || !std::isfinite(position.y) || footprint.size() < 3 || map_stamp <= 0 || grid.geometry().width == 0 ||
       grid.geometry().height == 0)
   {
     resetBlocked();
@@ -115,9 +116,29 @@ std::optional<ReplanEvent> RouteMonitor::observeBlocked(const nav_msgs::msg::Pat
     previous = point;
   }
   const double end = std::min(arc, progress + config_.blocked_lookahead_distance);
-  const auto obstacle =
-    findPathObstacle(path, grid, robot_radius + config_.blocked_safety_margin, progress, end);
-  const double blocked_ahead = obstacle.value_or(-1.0);
+  double blocked_ahead = -1.0;
+  const minco_controller::TrajectorySafety safety(grid, footprint, config_.blocked_safety_margin);
+  arc = 0;
+  previous = path.poses.front().pose.position;
+  const double yaw = tf2::getYaw(pose.pose.orientation);
+  for (const auto & waypoint : path.poses) {
+    const auto & point = waypoint.pose.position;
+    const double length = std::hypot(point.x - previous.x, point.y - previous.y);
+    if (length > 1e-9 && arc + length >= progress && arc <= end) {
+      const double lo = std::clamp((progress - arc) / length, 0.0, 1.0);
+      const double hi = std::clamp((end - arc) / length, 0.0, 1.0);
+      minco_controller::State a, b;
+      a.x = previous.x + lo * (point.x - previous.x);
+      a.y = previous.y + lo * (point.y - previous.y);
+      b.x = previous.x + hi * (point.x - previous.x);
+      b.y = previous.y + hi * (point.y - previous.y);
+      a.yaw = b.yaw = yaw;
+      try {safety.checkMotion(a, b, "RouteMonitor 前向轨迹");}
+      catch (const std::runtime_error &) {blocked_ahead = std::max(0.0, arc - progress); break;}
+    }
+    arc += length;
+    previous = point;
+  }
   if (blocked_ahead < 0.0) {
     blocked_count_ = 0;
     blocked_since_.reset();

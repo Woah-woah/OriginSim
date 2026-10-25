@@ -24,10 +24,19 @@ RegisteredCloudFrame adaptCloud(const sensor_msgs::msg::PointCloud2 &m, tf2_ros:
                                 const std::string &robot_frame, double received, size_t max_points)
 {
   const size_t points = static_cast<size_t>(m.width) * m.height;
-  if (m.header.frame_id.empty() || points > max_points || !m.point_step ||
+  // 点数预算与消息布局分别报错，避免合法的大点云被误诊为 TF 或格式故障。
+  if (points > max_points)
+    throw std::invalid_argument("Cloud point budget exceeded: points=" + std::to_string(points) +
+                                ", max_cloud_points=" + std::to_string(max_points));
+  if (m.header.frame_id.empty() || !m.point_step ||
       static_cast<size_t>(m.width) * m.point_step > m.row_step ||
       static_cast<size_t>(m.height) * m.row_step != m.data.size() || m.is_bigendian)
-    throw std::invalid_argument("Invalid/excessive PointCloud2 layout");
+    throw std::invalid_argument("Invalid PointCloud2 layout: frame=" + m.header.frame_id +
+                                ", width=" + std::to_string(m.width) +
+                                ", height=" + std::to_string(m.height) +
+                                ", point_step=" + std::to_string(m.point_step) +
+                                ", row_step=" + std::to_string(m.row_step) +
+                                ", bytes=" + std::to_string(m.data.size()));
   for (const std::string field : {"x", "y", "z"})
   {
     auto it = std::find_if(m.fields.begin(), m.fields.end(),

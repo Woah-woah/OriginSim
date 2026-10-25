@@ -54,15 +54,16 @@ rclcpp::NodeOptions mapClientOptions(
   }
   const auto config = YAML::LoadFile(filename);
   const bool dynamic_required = config["map_server"]["ros__parameters"]["dynamic_obstacles_enabled"].as<bool>(false);
-  if (dynamic_required) {
+  // 点云需求跟随同一配置中的生产端模式，避免静态模式永久等待不存在的点云。
+  {
     bool found = false;
     for (auto & parameter : parameters) {
       if (parameter.get_name() == "require_cloud") {
-        parameter = rclcpp::Parameter("require_cloud", true);
+        parameter = rclcpp::Parameter("require_cloud", dynamic_required);
         found = true;
       }
     }
-    if (!found) {parameters.emplace_back("require_cloud", true);}
+    if (!found) {parameters.emplace_back("require_cloud", dynamic_required);}
   }
   // 启动时的时钟覆盖配置同步应用于进程内客户端
   bool clock_found = false;
@@ -138,7 +139,8 @@ public:
       : Node("nav_executor"), costmap_(std::move(costmap)),
         tasks_(declare_parameter("goal_tolerance", 0.02),
           declare_parameter("retry_delay", 1.0),
-          declare_parameter("route_monitor.replan_cooldown", 2.0))
+          declare_parameter("route_monitor.replan_cooldown", 2.0),
+          declare_parameter("max_planning_failures", 3))
   {
     declare_parameter("log_enbaled", true);
     planning_timeout_ = declare_parameter("planning_timeout", 5.0);
@@ -165,6 +167,7 @@ public:
     smoother_config.topology_iterations = declare_parameter("path_smoother.topology_iterations", 3);
     smoother_ = std::make_unique<minimum_jerk_smoother::Smoother>(smoother_config);
     goal_id_pub_ = create_publisher<std_msgs::msg::UInt64>("nav_executor/goal_id", qos);
+    state_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/state", qos);
     segment_pub_ = create_publisher<std_msgs::msg::String>("nav_executor/segment", qos);
     RouteMonitorConfig monitor_config;
     monitor_config.enabled = declare_parameter("route_monitor.enabled", true);
@@ -522,6 +525,15 @@ public:
           publishTask();
         }
       }
+      if (tasks_.state() == TaskState::WAITING_FOR_MAP && !costmap_->isCurrent()) {
+        const auto view = costmap_->view();
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+          "等待有效地图：静态/派生层就绪=%s，当前版本=%lu，心跳版本=%lu，动态版本=%lu，"
+          "点云健康=%u，等待版本配对=%s",
+          view->ready() ? "是" : "否", view->version(), view->status().derived_version,
+          view->status().dynamic_version, static_cast<unsigned>(view->status().health.cloud),
+          costmap_->isUpdating() ? "是" : "否");
+      }
       if (auto request = tasks_.nextRequest(ready_, now)) {
         worker_->submit(std::move(*request));
         publishTask();
@@ -536,13 +548,19 @@ public:
       shared_from_this(),
       local_costmap,
       [this]() {
-        if (!ready_) {
-          return false;
-        }
+        // 控制线程直接查询当前视图，不能使用规划线程滞后一周期的缓存状态。
         return costmap_->isCurrent();
       },
-      [this](PlanIdentity identity, const std::string & error) {
-        if (tasks_.executionFailed(identity, error, TaskManager::Clock::now())) {
+      [this](PlanIdentity identity, const std::string & error, ExecutionFailure kind) {
+        if (kind == ExecutionFailure::MAP_CHANGED) {
+          if (tasks_.executionFailed(identity, error, TaskManager::Clock::now())) {
+            worker_->invalidate(tasks_.generation());
+            publishTask();
+          }
+          return;
+        }
+        if (kind == ExecutionFailure::CONTROLLER_INFEASIBLE && requestRecovery(identity)) {return;}
+        if (tasks_.terminalFailure(identity, error)) {
           worker_->invalidate(tasks_.generation());
           publishTask();
         }
@@ -554,7 +572,7 @@ public:
         }
       },
       [this](PlanIdentity identity) {
-        return tasks_.isPlanConfirmed(identity);
+        return tasks_.isPlanConfirmed(identity) || tasks_.recoveryConfirmed(identity);
       },
       [this](PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose) {
         if (tasks_.observeProgress(identity, pose, connector_entry_clearance_)) {
@@ -571,6 +589,15 @@ public:
         const auto event = monitor_->observe(tasks_.plan().full_path, identity, pose, command, now);
         if (event) {
           handleReplanEvent(*event, now);
+        }
+      },
+      [this](PlanIdentity identity, bool success, const std::string & reason) {
+        if (tasks_.finishRecovery(identity, success, reason, TaskManager::Clock::now(),
+          get_parameter("recovery.cooldown").as_double()))
+        {
+          monitor_->reset();
+          worker_->invalidate(tasks_.generation());
+          publishTask();
         }
       });
   }
@@ -605,8 +632,38 @@ private:
     executor_->acceptPath(tasks_.plan().full_path, tasks_.identity());
   }
 
+  bool requestRecovery(PlanIdentity identity)
+  {
+    if (!executor_ || !tasks_.isPlanConfirmed(identity) ||
+      !get_parameter("recovery.enabled").as_bool()) {return false;}
+    const auto route = tasks_.plan().full_path;
+    if (!tasks_.beginRecovery(identity, TaskManager::Clock::now(),
+      static_cast<int>(get_parameter("recovery.max_attempts").as_int())))
+    {
+      executor_->stop("Recovery 次数或冷却限制");
+      publishTask();
+      return false;
+    }
+    worker_->invalidate(tasks_.generation());
+    monitor_->reset();
+    if (!executor_->startRecovery(route, identity)) {
+      tasks_.finishRecovery(identity, false, "Recovery 无法启动或总距离耗尽",
+        TaskManager::Clock::now(), get_parameter("recovery.cooldown").as_double());
+      publishTask();
+      return false;
+    }
+    RCLCPP_WARN(get_logger(), "进入 Recovery：目标=%lu，路径=%lu，累计尝试=%u",
+      identity.goal_id, identity.plan_generation, tasks_.recoveryAttempts());
+    publishTask();
+    return true;
+  }
+
   void handleReplanEvent(const ReplanEvent & event, TaskManager::Clock::time_point now)
   {
+    if ((event.reason == ReplanReason::EXECUTION_STALLED ||
+      (event.reason == ReplanReason::PATH_BLOCKED &&
+       event.path_distance <= get_parameter("recovery.max_distance").as_double())) &&
+      requestRecovery(event.identity)) {return;}
     if (!tasks_.routeInvalid(event, now)) {
       return;
     }
@@ -642,23 +699,24 @@ private:
       return;
     }
     std::optional<ReplanEvent> event;
-    {
+    try {
       const auto grid = costmap_->view();
       if (!costmap_->isCurrent(*grid)) {
         monitor_->resetBlocked();
         return;
-      }
-      double radius = costmap_->settings().robot_radius;
-      for (const auto & vertex : costmap_->getRobotFootprint()) {
-        radius = std::max(radius, std::hypot(vertex.x, vertex.y));
       }
       event = monitor_->observeBlocked(tasks_.plan().full_path,
         tasks_.identity(),
         *pose,
         *grid,
         static_cast<int64_t>(grid->status().stamp_s * 1e9),
-        radius,
+        costmap_->footprintInBaseFrame(pose->header.stamp),
         now);
+    } catch (const std::exception & error) {
+      executor_->stop(error.what());
+      tasks_.terminalFailure(tasks_.identity(), error.what());
+      publishTask();
+      return;
     }
     if (event) {
       handleReplanEvent(*event, now);
@@ -698,6 +756,9 @@ private:
 
   void publishTask()
   {
+    std_msgs::msg::String task_status;
+    task_status.data = TaskManager::stateName(tasks_.state());
+    state_pub_->publish(task_status);
     const bool has_plan = !tasks_.plan().segments.empty();
     if (connector_ &&
         (!connector_plan_identity_ || *connector_plan_identity_ != tasks_.identity() ||
@@ -792,7 +853,7 @@ private:
   std::unique_ptr<RouteMonitor> monitor_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr original_path_pub_, smoothed_path_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr segment_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr segment_pub_, state_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr goal_id_pub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr cancel_srv_;

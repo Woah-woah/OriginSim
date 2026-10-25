@@ -5,6 +5,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_executor/task_manager.hpp"
 #include "map_server/map_view.hpp"
+#include "map_server/footprint.hpp"
 
 namespace nav_executor
 {
@@ -40,7 +41,7 @@ public:
     const geometry_msgs::msg::PoseStamped & pose,
     const map_server::MapView & grid,
     int64_t map_stamp,
-    double robot_radius,
+    const map_server::Footprint & footprint,
     TaskManager::Clock::time_point now);
   void resetBlocked();
 

@@ -30,6 +30,13 @@ def generate_launch_description():
             'launch', 'point_lio.launch.py'))
     )
 
+    ada = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('adaptive_lio'),
+            'launch', 'run.launch.py'
+        ))
+    )
+
     start_rviz = Node(
         package='rviz2',
         executable='rviz2',
@@ -67,7 +74,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        pointlio,
+        # pointlio,
+        ada,
         container,
         modify,
         start_rviz,

@@ -132,6 +132,11 @@ void MincoMpcController::reset()
   progress_time_ = 0.0;
 }
 
+void MincoMpcController::notifyZeroCommandPublished()
+{
+  if (solver_) {solver_->setPreviousControl(Control{});}
+}
+
 void MincoMpcController::setPlan(const nav_msgs::msg::Path & path)
 {
   if (!solver_) {throw std::logic_error("请先初始化局部控制器，再设置路径");}
@@ -164,8 +169,10 @@ void MincoMpcController::checkPrediction(
   const CostmapCost field(snapshot, footprint, collision_margin_,
     config_.obstacle_trust_region);
   for (size_t i = 0; i < prediction.size(); ++i) {
-    field.checkMotion(prediction[i ? i - 1 : 0], prediction[i],
-      stage + "，检查路段=" + std::to_string(i));
+    try {
+      field.checkMotion(prediction[i ? i - 1 : 0], prediction[i],
+        stage + "，检查路段=" + std::to_string(i));
+    } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
   }
 }
 
@@ -245,9 +252,13 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   // 只复制不可变视图指针；距离、原始障碍与硬安全检查全程使用同一个地图版本。
   const auto footprint = costmap_->footprintInBaseFrame(pose.header.stamp);
   const auto captured = costmap_->view();
-  if (!costmap_->isCurrent(*captured)) {throw std::runtime_error("局部地图快照无效或过期");}
+  if (!costmap_->isCurrent(*captured)) {
+    if (costmap_->isUpdating()) {throw MapChanged("地图新版本尚在配对，当前周期停车等待");}
+    throw std::runtime_error("局部地图快照无效或过期");
+  }
   const auto & snapshot = *captured;
   const CostmapCost field(snapshot, footprint, collision_margin_, config_.obstacle_trust_region);
+  field.checkPose(observed, "当前实际车体轮廓");
   // This segment is fixed by measured velocity and cannot be repaired by U.
   try {
     checkPrediction({observed, current}, "延迟期间按当前实测速度预测", snapshot, footprint);
@@ -296,7 +307,7 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   if (!solver_->solve(current, reference, control, &prediction, sample_cost, &observed,
     sample_envelope, command_model, sample_motion))
   {
-    throw std::runtime_error("局部控制求解失败：" + solver_->lastStatusMessage() +
+    throw ControllerInfeasible("局部控制求解失败：" + solver_->lastStatusMessage() +
       "（状态码=" + std::to_string(solver_->lastStatus()) + "）");
   }
   // QP 已输出最终全局速度；不再在求解后做相位旋转、限幅或死区截断。
@@ -308,9 +319,18 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   next.yaw += control.omega * config_.dt;
   checkPrediction({current, next}, "最终输出指令检查", snapshot, footprint);
   // 同时覆盖平移和转动，以及 [0, delay] 内所有执行延迟，不再使用外接圆。
-  field.checkEnvelope(observed, control, control_delay_, config_.control_period,
-    "指令保持期间的轮廓安全检查");
-  if (!costmap_->isCurrent(snapshot)) {throw std::runtime_error("求解期间局部地图或距离场已过期，拒绝输出本次速度");}
+  try {
+    field.checkEnvelope(observed, control, control_delay_, config_.control_period,
+      "指令保持期间的轮廓安全检查");
+  } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
+  const auto latest = costmap_->view();
+  if (!costmap_->isCurrent(snapshot) || latest->status().dynamic_version != snapshot.status().dynamic_version) {
+    if (costmap_->isUpdating()) {throw MapChanged("地图更新尚未配对，当前周期停车等待");}
+    if (costmap_->isCurrent(*latest) && latest->status().producer_id == snapshot.status().producer_id &&
+      latest->version() != snapshot.version())
+    {throw MapChanged("求解期间地图更新，停车后重新规划");}
+    throw std::runtime_error("求解期间地图或传感器状态已失效，拒绝输出速度");
+  }
   geometry_msgs::msg::TwistStamped command;
   command.header.stamp = node->now();
   command.header.frame_id = costmap_->getBaseFrameID();

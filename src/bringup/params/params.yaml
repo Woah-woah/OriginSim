@@ -15,12 +15,12 @@ map_server:
     update_frequency: 10.0                  # Hz，地图后台更新频率；障碍未变化时复用已有 EDT
 
     dynamic_obstacles_enabled: false
-    cloud_topic: /cloud_registered
+    cloud_topic: /livox/scan          # /cloud_registered
     static_pcd: "rmuc2026.pcd"
     cloud_timeout: 0.5                # s，点云观测超过此时间视为过期
     tf_wait_timeout: 0.15             # s，点云按观测时间查询 TF 时允许的等待时限
-    max_cloud_points: 10000           # 单帧点云点数预算，超限拒绝，避免处理耗时失控
-    max_accumulated_points: 20000     # 累积点云总点数预算
+    max_cloud_points: 200000          # 原始仿真帧为 60000 点；与 MapServer 默认输入预算一致，超限仍拒绝
+    max_accumulated_points: 500000    # ROI/体素过滤后的累积点数预算，与 MapServer 默认值一致
     accumulate_frames: 4              # 最多累积的点云帧数，与下面的时间窗口共同限制
     accumulate_duration: 0.35         # s，点云累积时间窗口
     roi:
@@ -58,7 +58,7 @@ map_client:
     track_unknown_space: true
     inflation_radius: 0.55
     cost_scaling_factor: 5.0
-    require_cloud: false              # 与当前关闭的动态检测对应；启用动态检测时必须同步改为 true。
+    require_cloud: false              # 普通导航跟随生产端模式；开启动态障碍时由执行器自动要求点云。
     require_radar: false              # 是否要求雷达来源健康；开启后缺失或过期会阻止地图用于导航
     map_timeout: 1.0                  # s，地图状态心跳的最大允许时效；不是要求静态地图定期重算
     transform_tolerance: 0.5          # s，机器人位姿 TF 允许的最大数据年龄
@@ -81,6 +81,7 @@ nav_executor:
     xy_goal_tolerance: 0.3            # m，控制器判定到达目标的位置容差
     yaw_goal_tolerance: 3.14          # rad，控制器判定到达目标的朝向容差；3.14 接近不限制朝向
     stopped_velocity_tolerance: 0.05  # m/s，到点时用于判定平移速度已足够低的阈值
+    max_planning_failures: 3          # 重规划次数，到了触发恢复
     route_monitor:
       enabled: true
       deviation_distance: 0.5     # m，机器人偏离路径超过此距离开始计时
@@ -107,12 +108,19 @@ nav_executor:
       topology_iterations: 3   # 平滑后拓扑约束复检与修正的最大迭代次数
     connector_executor:
       enabled: true
-      region_half_width: 0.8  # 矩形半宽
+      region_half_width: 1.2  # 矩形半宽
       entry_extension: 1.0    # 入口前面
       exit_extension: 0.3     # 出口后面
       exit_hysteresis: 0.05   # 出口死区
       exit_debounce: 0.2      # s，持续离开通道区域达到此时间后，才释放占用状态
       pose_timeout: 0.5       # s，位姿缺失或过期时保留原通道状态，不提前释放
+    recovery:
+      enabled: true
+      speed: 0.18          # m/s，只做单方向平移，不主动转车头
+      max_distance: 1.5    # m，单次脱困最大实际行驶距离
+      timeout: 30.0        # s，包含停车确认、选方向、执行和停稳
+      max_attempts: 3      # 同一目标累计次数，重规划不清零
+      cooldown: 3.0        # s，成功后冷却期再次卡住则终止，防止循环
     MPC:
       dt: 0.02                               # s，MPC 预测步长；需与控制频率一起考虑
       horizon: 25                            # 预测步数；当前预测时域为 25 × 0.02 = 0.5 s
@@ -130,7 +138,7 @@ nav_executor:
       vy_max: 1.7
       omega_min: -2.0
       omega_max: 2.0
-      use_acc_constraints: false             # 是否启用下方线加速度和角加速度约束
+      use_acc_constraints: true              # 舵轮起步必须满足下方加速度约束，避免首次起步冲击
       ax_min: -1.5
       ax_max: 1.5
       ay_min: -1.5
@@ -163,6 +171,6 @@ topology_planner:
       transform_tolerance: 0.1              # s，拓扑规划查询 TF 的等待时限
       grid:
         tolerance: 0.2                        # m，精确目标不可达时允许选取附近可达目标的最大距离
-        use_astar: false                      # 仅选择目标可达性搜索 A*/Dijkstra；路径均由 FMM 连续势场梯度提取
+        use_astar: true                      # 仅选择目标可达性搜索 A*/Dijkstra；路径均由 FMM 连续势场梯度提取
         allow_unknown: false                  # 与二值平滑器及碰撞复检保持一致
         use_final_approach_orientation: true  # true：末端朝向沿接近路径；false：使用目标消息中的朝向

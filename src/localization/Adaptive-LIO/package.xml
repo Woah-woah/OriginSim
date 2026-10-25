@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>adaptive_lio</name>
+  <version>0.0.0</version>
+
+  <description>
+    This work is created based on some optimization on CT-LIO
+  </description>
+
+  <maintainer email="chengweizhao0427@gmail.com">chengwei</maintainer>
+
+  <license>BSD</license>
+  <url>https:*</url>
+  <author email="chengweizhao0427@gmail.com">chengwei</author>
+  
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>eigen</depend>
+  <depend>PCL</depend>
+  <depend>livox_ros_driver2</depend>
+  
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

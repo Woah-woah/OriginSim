@@ -14,6 +14,7 @@ enum class ExecutionState
 {
   IDLE,
   RUNNING,
+  RECOVERING,
   STOPPED,
   SUCCEEDED,
   FAILED
@@ -25,10 +26,13 @@ geometry_msgs::msg::Twist transformRobotVelocity(const geometry_msgs::msg::Twist
 bool finiteTwist(const geometry_msgs::msg::Twist & speed);
 
 // 接口与控制周期使用互斥回调组，里程计接收和代价地图激活独立运行，里程计快照由互斥锁保护
+enum class ExecutionFailure { SAFETY_OR_INPUT, CONTROLLER_INFEASIBLE, MAP_CHANGED };
+
 class PathExecutor
 {
 public:
-  using Failure = std::function<void(PlanIdentity, const std::string &)>;
+  using Failure = std::function<void(PlanIdentity, const std::string &, ExecutionFailure)>;
+  using RecoveryDone = std::function<void(PlanIdentity, bool, const std::string &)>;
   using Success = std::function<void(PlanIdentity)>;
   using Confirmation = std::function<bool(PlanIdentity)>;
   using Progress = std::function<void(PlanIdentity, const geometry_msgs::msg::PoseStamped &)>;
@@ -41,11 +45,13 @@ public:
     Success success,
     Confirmation confirmation,
     Progress progress,
-    Observation observation);
+    Observation observation,
+    RecoveryDone recovery_done);
   ~PathExecutor();
   PathExecutor(const PathExecutor &) = delete;
   PathExecutor & operator=(const PathExecutor &) = delete;
   bool acceptPath(const nav_msgs::msg::Path & path, PlanIdentity identity);
+  bool startRecovery(const nav_msgs::msg::Path & route, PlanIdentity identity);
   void stop(const std::string & reason);
   // 线程安全地锁定急停并发布零速度，无需等待控制器
   void emergencyStop();

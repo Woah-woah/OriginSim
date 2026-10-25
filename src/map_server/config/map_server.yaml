@@ -56,7 +56,7 @@ map_client:
     track_unknown_space: true
     inflation_radius: 0.55
     cost_scaling_factor: 5.0
-    require_cloud: false  # 与当前关闭的动态检测对应；启用动态检测时必须同步改为 true。
+    require_cloud: false  # 普通导航跟随生产端模式；开启动态障碍时由执行器自动要求点云。
     require_radar: false
     map_timeout: 1.0
     transform_tolerance: 0.5

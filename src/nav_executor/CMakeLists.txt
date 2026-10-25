@@ -14,6 +14,7 @@ set(dependencies
   geometry_msgs
   nav_msgs
   std_msgs
+  visualization_msgs
   std_srvs
   tf2
   tf2_geometry_msgs
@@ -24,6 +25,7 @@ foreach(dependency IN LISTS dependencies)
 endforeach()
 
 add_library(${PROJECT_NAME}_core
+  src/recovery.cpp
   src/task_manager.cpp
   src/path_planner.cpp
   src/path_executor.cpp
@@ -44,7 +46,7 @@ target_link_libraries(nav_executor_node ${PROJECT_NAME}_core)
 target_link_libraries(nav_executor_node yaml-cpp)
 ament_target_dependencies(nav_executor_node ${dependencies} ament_index_cpp referee_msg)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(${PROJECT_NAME}_core PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(${PROJECT_NAME}_core PRIVATE -O2 -Wall -Wextra -Wpedantic)
   target_compile_options(nav_executor_node PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
@@ -57,5 +59,6 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_export_include_directories(include)
-ament_export_dependencies(rclcpp geometry_msgs nav_msgs map_server topology_global_planner)
+ament_export_dependencies(rclcpp geometry_msgs nav_msgs map_server topology_global_planner
+  minco_controller visualization_msgs)
 ament_package()

@@ -56,6 +56,15 @@ void MpcSolver::reset()
   last_status_ = 0;
 }
 
+// 执行器发布停车指令后同步控制历史，避免把未发送的候选解当作上一条命令。
+void MpcSolver::setPreviousControl(const Control & command)
+{
+  const Eigen::Vector3d value(command.vx, command.vy, command.omega);
+  if (!value.allFinite()) {throw std::invalid_argument("上一条控制指令含无效数值");}
+  last_u_global_ = value;
+  has_last_u_ = true;
+}
+
 // 日志专用说明，不参与求解分支或安全判断。
 std::string MpcSolver::lastStatusMessage() const
 {
@@ -255,7 +264,7 @@ bool MpcSolver::buildCondensedQP(const State & curr,
   }
 
   // 加速度约束（可选）：a_min <= (v_k - v_{k-1})/dt <= a_max
-  if (!config_.use_acc_constraints && costs.empty()) {
+  if (!config_.use_acc_constraints && costs.empty() && first_motion_minimum_ <= 0.0) {
     A_con.resize(0, 0);
     lbA.resize(0);
     ubA.resize(0);
@@ -265,14 +274,19 @@ bool MpcSolver::buildCondensedQP(const State & curr,
   const int nAcc = config_.use_acc_constraints ? 3 * N : 0;
   int nSafety = 0;
   for (const auto & cost : costs) {nSafety += static_cast<int>(cost.safety_planes.size());}
-  const int nC = nAcc + 2 * static_cast<int>(costs.size()) + nSafety;
+  const int nC = nAcc + 2 * static_cast<int>(costs.size()) + nSafety +
+    (first_motion_minimum_ > 0.0 ? 1 : 0);
   A_con = Eigen::MatrixXd::Zero(nC, nU);
   lbA = Eigen::VectorXd::Zero(nC);
   ubA = Eigen::VectorXd::Zero(nC);
 
-  const double last_vx = curr.vx;
-  const double last_vy = curr.vy;
-  const double last_w = curr.omega;
+  // 硬限制作用于实际发送的速度序列。存在控制延迟时，反馈速度会滞后多个周期，
+  // 不能每周期拿同一条旧反馈重新限制指令，否则起步会卡在最低速度。
+  const Eigen::Vector3d anchor = has_last_u_ ? last_u_global_ :
+    Eigen::Vector3d(curr.vx, curr.vy, curr.omega);
+  const double last_vx = anchor.x();
+  const double last_vy = anchor.y();
+  const double last_w = anchor.z();
 
   // 约束形式：lbA <= A_con * U <= ubA
   // 这里 A_con * U 直接表示 (v_k - v_{k-1})，再用 bounds 限制到 [a_min*dt, a_max*dt]
@@ -284,7 +298,7 @@ bool MpcSolver::buildCondensedQP(const State & curr,
 
       if (k == 0) {
         // v0 - v(-1)
-        // v(-1) 使用当前时刻真实全局速度作为已知常数，转移到 bounds：
+        // v(-1) 使用上一条已发送/接受的全局指令，转移到 bounds：
         // a_min*dt <= v0 - v_curr_global <= a_max*dt
         const double last = (axis == 0 ? last_vx : (axis == 1 ? last_vy : last_w));
         lbA(row) =
@@ -322,6 +336,11 @@ bool MpcSolver::buildCondensedQP(const State & curr,
       ++row;
     }
   }
+  if (first_motion_minimum_ > 0.0) {
+    A_con.block<1, 2>(row, 0) = first_motion_direction_.transpose();
+    lbA(row) = first_motion_minimum_;
+    ubA(row) = 1e12;
+  }
   return true;
 }
 
@@ -341,6 +360,8 @@ bool MpcSolver::solve(const State & curr,
   {last_status_ = -4; return false;}
   command_model_ = command_model;
   zero_first_translation_ = false;
+  first_motion_minimum_ = 0.0;
+  first_motion_direction_.setZero();
   Control accepted;
   std::vector<State> prediction;
   if (!solveImpl(curr, ref_traj, accepted, &prediction, sample_cost, observed, sample_envelope, sample_motion)) {
@@ -348,12 +369,30 @@ bool MpcSolver::solve(const State & curr,
   }
   const double speed = std::hypot(accepted.vx, accepted.vy);
   if (speed > 1e-10 && speed < command_model_.deadzone) {
-    // 死区必须进入 QP 后重新预测和检查，禁止求解完成后直接把速度改成零。
-    zero_first_translation_ = true;
-    if (!solveImpl(curr, ref_traj, accepted, &prediction, sample_cost, observed, sample_envelope, sample_motion)) {
-      return false;
+    // 停车和最小可执行速度都在 QP 中求解，并保留全部加速度及轮廓安全约束。
+    const Eigen::Vector2d direction(accepted.vx / speed, accepted.vy / speed);
+    const Eigen::Vector2d anchor = has_last_u_ ? last_u_global_.head<2>().eval() :
+      Eigen::Vector2d(curr.vx, curr.vy);
+    const bool zero_reachable = !config_.use_acc_constraints ||
+      (anchor.x() + config_.ax_min * config_.control_period <= 0 &&
+       anchor.x() + config_.ax_max * config_.control_period >= 0 &&
+       anchor.y() + config_.ay_min * config_.control_period <= 0 &&
+       anchor.y() + config_.ay_max * config_.control_period >= 0);
+    bool stopped = false;
+    if (zero_reachable) {
+      zero_first_translation_ = true;
+      stopped = solveImpl(curr, ref_traj, accepted, &prediction, sample_cost, observed,
+        sample_envelope, sample_motion);
+    }
+    if (!stopped) {
+      zero_first_translation_ = false;
+      first_motion_direction_ = direction;
+      first_motion_minimum_ = command_model_.deadzone;
+      if (!solveImpl(curr, ref_traj, accepted, &prediction, sample_cost, observed,
+        sample_envelope, sample_motion)) {return false;}
     }
   }
+
   out_u = accepted;
   last_u_global_ = Eigen::Vector3d(out_u.vx, out_u.vy, out_u.omega);
   has_last_u_ = true;

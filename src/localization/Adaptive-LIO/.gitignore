@@ -1,0 +1,15 @@
+.vscode/
+devel/
+build/
+install/
+log/
+rosbag*
+.trae/
+.cache/
+__pycache__/
+.catkin_workspace
+*.gv
+*.pdf
+*.pcd
+map_db/
+AGENTS.md

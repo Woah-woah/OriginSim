@@ -33,13 +33,11 @@ public:
     return static_ && derived_ && static_producer_ == derived_producer_ &&
            static_->geometry == derived_->geometry && !error_mask_;
   }
-  bool current(double ros_now, double steady_now, const MapPolicy &policy) const
+  // 健康与版本配对分开判断：健康的新图正在传输时允许停车等待，但不允许输出运动。
+  bool healthy(double ros_now, double steady_now, const MapPolicy &policy) const
   {
     if (!ready() || !dynamic_ || status_.producer_id != static_producer_ ||
-        dynamic_producer_ != static_producer_ || derived_->dynamic_version != dynamic_version_ ||
-        dynamic_->input_version != derived_->input_version ||
-        status_.derived_version != derived_->version ||
-        status_.dynamic_version != dynamic_version_ || status_.health.map_error ||
+        dynamic_producer_ != static_producer_ || status_.health.map_error ||
         ros_now < status_.stamp_s - 0.1 || ros_now - status_.stamp_s > policy.timeout_s ||
         steady_now < status_.received_steady_s ||
         steady_now - status_.received_steady_s > policy.timeout_s ||
@@ -50,6 +48,14 @@ public:
            (!policy.require_radar || (status_.health.radar_allies == SourceStatus::VALID &&
                                       status_.health.radar_enemies == SourceStatus::VALID &&
                                       status_.health.self_filter_verified));
+  }
+  bool current(double ros_now, double steady_now, const MapPolicy &policy) const
+  {
+    return healthy(ros_now, steady_now, policy) &&
+           derived_->dynamic_version == dynamic_version_ &&
+           dynamic_->input_version == derived_->input_version &&
+           status_.derived_version == derived_->version &&
+           status_.dynamic_version == dynamic_version_;
   }
   // 一次插值同时返回米制距离和世界坐标梯度，查询不会修改冻结视图。
   bool sampleDistance(double x, double y, DistanceSample &sample) const

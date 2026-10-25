@@ -32,6 +32,14 @@ nav_executor:
       exit_hysteresis: 0.05    # 单位米，解除低头指令前的额外间距
       exit_debounce: 0.2       # 单位秒，持续离开区域后解除低头指令
       pose_timeout: 0.5        # 单位秒，坐标变换过期或缺失时保留指令与区域
+    max_planning_failures: 3
+    recovery:
+      enabled: true
+      speed: 0.18          # m/s，只做单方向平移，不主动转车头
+      max_distance: 1.5    # m，单次脱困最大实际行驶距离
+      timeout: 30.0        # s，包含停车确认、选方向、执行和停稳
+      max_attempts: 3      # 同一目标累计次数，重规划不清零
+      cooldown: 3.0        # s，成功后冷却期再次卡住则终止，防止循环
     route_monitor:
       enabled: true
       deviation_distance: 0.5

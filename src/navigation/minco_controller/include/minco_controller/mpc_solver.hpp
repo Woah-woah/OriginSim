@@ -25,6 +25,7 @@ public:
   explicit MpcSolver(const MPCConfig & config);
 
   void setConfig(const MPCConfig & config);
+  void setPreviousControl(const Control & command);
 
   // @brief 求解一次 MPC。
   // @param curr 当前状态 (map)
@@ -59,6 +60,8 @@ private:
     const State * observed, const EnvelopeSampler & sample_envelope, const MotionSampler & sample_motion);
   CommandModel command_model_;
   bool zero_first_translation_{false};
+  Eigen::Vector2d first_motion_direction_{0.0, 0.0};
+  double first_motion_minimum_{0.0};
 
   bool solveOnce(const State & curr, const std::vector<ReferencePoint> & ref_traj,
     const std::vector<CostLinearization> & costs, Control & out_u,

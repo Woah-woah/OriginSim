@@ -331,6 +331,12 @@ bool MapClient::isCurrent() const
 {
   return isCurrent(*view());
 }
+bool MapClient::isUpdating() const
+{
+  const auto latest = view();
+  const double ros = now().seconds(), steady = steadySeconds();
+  return latest->healthy(ros, steady, policy_) && !latest->current(ros, steady, policy_);
+}
 bool MapClient::isCurrent(const MapView &captured) const
 {
   const auto latest = view();

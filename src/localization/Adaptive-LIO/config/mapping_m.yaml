@@ -1,0 +1,119 @@
+YAML: 1.0
+
+preprocess:
+  point_filter_num: 1
+  lidar_type: 2 # Gazebo GPU 雷达瞬时 PointCloud2
+  blind: 0.1
+  sweep_cut_num: 1 # 不要动
+
+common:
+  imu_topic: /livox/imu
+  lid_topic: /livox/lidar/pointcloud # 直接使用原始仿真点云，绕过伪扫描时间转换
+  aux_lidar_topic: '' # 当前仿真没有副雷达
+  gnorm: 1.0 # Gazebo IMU 已使用 m/s²，无需再次乘重力加速度
+  # Fusion frame alignment
+  # Assume IMU frame == aft_mapped frame.
+  # Relative transform aft_mapped -> base_link: [x, y, z, roll, pitch, yaw] (m, rad)
+  fusion_aft_to_base_xyzrpy: [-0.04, 0.165, -0.33, 0, 0, 0]
+  fusion_base_link_frame: base_link
+  fusion_max_path_poses: 300       # 限制 odometry_path 长度，避免路径消息无限增大拖慢发布链路
+
+mapping:
+  extrinsic_est_en: true
+  extrinsic_T: [0, 0, 0.03] # SDF 中雷达光心相对 IMU 向上 3 cm
+  extrinsic_R: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+
+delay_time: 0.05
+
+aux_lidar:
+  enable_bundle_fusion: false
+  min_points_per_measurement: 1000
+  time_offset: 0.0
+  sync_margin: 0.01
+  extrinsic_xyz: [0.0, 0.0, 0.0]
+  extrinsic_rpy_deg: [0.0, 0.0, 0.0]
+
+odometry:
+  lidar_covariance_mode: fixed
+  diagnostic_stride: 10
+  match_max_translation: 2.0
+  match_max_rotation: 1.0
+  point_time_model: IMU_DESKEW_END
+  match_max_innovation_score: 100.0
+  geometry:
+    reference_length_m: 1.0
+    variance_floor: 0.01
+    variance_ceiling: 100.0
+    residual_variance_m2: 1.0
+    correlation_inflation: 1.0
+  surf_res: 0.5
+  log_print: false
+  max_num_iteration: 4
+  size_voxel_map: 0.5 # The voxel size of in the voxel map
+  min_distance_points: 0.15
+  max_num_points_in_voxel: 20 # The maximum number of points per voxel of the map
+  max_distance: 40.0 # The threshold of the distance to suppress voxels from the map
+  weight_alpha: 0.9
+  weight_neighborhood: 0.1
+  max_dist_to_plane_icp: 0.3 # This is important
+  init_num_frames: 20
+  voxel_neighborhood: 1
+  max_number_neighbors: 20
+  threshold_voxel_occupancy: 1
+  estimate_normal_from_neighborhood: true
+  min_number_neighbors: 20 # The minimum number of neighbor points to define a valid neighborhood
+  power_planarity: 2.0
+  num_closest_neighbors: 1
+
+  sampling_rate: 0.8
+  max_num_residuals: 500
+  min_num_residuals: 50
+
+  thres_translation_norm: 0.01 # m
+  thres_orientation_norm: 0.1 # deg
+  fov_segment_stride: 2 # 降低地图裁剪频率，减轻后台维护开销
+  sparse_scene_distance_thresh: 20.0 # 超过该距离按稀疏远场点处理，减少邻域搜索成本
+  sparse_nearest_neighbor_ratio: 3.0 # 最近邻距离上限 = max_dist_to_plane_icp * ratio
+  sparse_min_planarity: 0.15 # 几何结构太弱则不进入残差构造
+  map_update_translation_trigger: 0.15 # m，位移不足时跳过部分地图维护
+  map_update_rotation_trigger: 0.03 # rad，转动不足时跳过部分地图维护
+  map_update_max_skip_frames: 3 # 最多连续跳过多少帧地图维护
+
+
+cloud_pub:
+  max_z_filter: 3.5 # the roof must be filtered
+  min_z_filter: -1.0 
+  space_down_sample: 0.05 # should not larger than 0.05
+  enable_body_filter: true
+  body_filter_x_min: -0.6 # 车体系盒滤波范围，可按车体前后尺寸调整
+  body_filter_x_max: 0.6
+  body_filter_y_min: -0.6
+  body_filter_y_max: 0.6
+  body_filter_z_min: -0.3
+  body_filter_z_max: 0.3
+
+mapping_module:
+  enable_mapping: false # false 时直接关闭 Scan Context 回调与后台 worker
+  keyframe_dist_thresh: 1.0
+  keyframe_angle_thresh: 0.8
+  map_save_path: "./map_scantext07093.pcd"
+  auto_save_interval: 20.0 # meters
+  
+  scantext:
+    num_ring: 20
+    num_sector: 60
+    max_radius: 80.0
+    use_scpp: true
+    scpp_search_ratio: 0.1
+    cart_x_unit: 5.0
+    cart_y_unit: 2.0
+    cart_x_max: 100.0
+    cart_y_max: 40.0
+
+imu_quality:
+  gyro_limit_rad_s: [0.0, 0.0, 0.0]
+  accel_limit_m_s2: [0.0, 0.0, 0.0]
+  saturation_ratio: 0.95
+  hold_seconds: 0.0
+  noise_multiplier: 100.0
+  recovery_samples: 3

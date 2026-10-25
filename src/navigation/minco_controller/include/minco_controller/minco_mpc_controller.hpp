@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <stdexcept>
 
 #include "minco_controller/mpc_solver.hpp"
 #include "minco_controller/path_trajectory.hpp"
@@ -15,6 +16,18 @@ namespace map_server {class MapClient; class MapView;}
 
 namespace minco_controller
 {
+class MapChanged : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
+
+class ControllerInfeasible : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
+
 class MincoMpcController
 {
 public:
@@ -22,6 +35,7 @@ public:
     const std::shared_ptr<map_server::MapClient> & costmap);
   void setPlan(const nav_msgs::msg::Path & path);
   void reset();
+  void notifyZeroCommandPublished();
   geometry_msgs::msg::TwistStamped computeVelocityCommands(
     const geometry_msgs::msg::PoseStamped & pose,
     const geometry_msgs::msg::Twist & measured_speed);

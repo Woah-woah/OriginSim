@@ -18,6 +18,8 @@ enum class TaskState
   WAITING_FOR_MAP,
   PLANNING,
   PATH_READY,
+  RECOVERING,
+  TERMINAL_FAILED,
   SUCCEEDED,
   FAILED
 };
@@ -92,13 +94,19 @@ class TaskManager
 public:
   using Clock = std::chrono::steady_clock;
   explicit TaskManager(
-    double goal_tolerance = 0.02, double retry_delay = 1.0, double replan_cooldown = 2.0);
+    double goal_tolerance = 0.02, double retry_delay = 1.0, double replan_cooldown = 2.0, int max_planning_failures = 3);
   bool setGoal(const geometry_msgs::msg::PoseStamped & goal);
   bool replan();
   void cancel();
   std::optional<PlanningRequest> nextRequest(bool map_ready, Clock::time_point now);
   bool accept(PlanningResult result, Clock::time_point now);
   bool executionFailed(PlanIdentity identity, const std::string & error, Clock::time_point now);
+  bool beginRecovery(PlanIdentity identity, Clock::time_point now, int max_attempts);
+  bool finishRecovery(PlanIdentity identity, bool success, const std::string & error,
+    Clock::time_point now, double cooldown);
+  bool terminalFailure(PlanIdentity identity, const std::string & error);
+  bool recoveryConfirmed(PlanIdentity identity) const;
+  unsigned int recoveryAttempts() const {return recovery_attempts_;}
   bool executionSucceeded(PlanIdentity identity);
   bool observeProgress(
     PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose, double entry_clearance);
@@ -160,6 +168,10 @@ private:
   bool route_replan_pending_{false}; // 记录路线重规划的调度原因
   PlanIdentity identity_;
   uint64_t replan_count_{0};
+  unsigned int recovery_attempts_{0};
+  unsigned int planning_failures_{0};
+  unsigned int max_planning_failures_{3};
+  Clock::time_point recovery_allowed_at_{};
   ReplanReason last_replan_reason_{ReplanReason::NONE};
   std::optional<geometry_msgs::msg::PoseStamped> goal_;
   TaskState state_{TaskState::IDLE};
