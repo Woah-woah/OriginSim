@@ -20,10 +20,11 @@
           <specular>0.01 0.01 0.01 1</specular>
         </material>
       </visual>
+      <!-- 装饰标识仅显示：碰撞网格排除地面上方 3～5 毫米的独立装饰薄片，保留地面、坡道及实体障碍。 -->
       <collision name='collision'>
         <geometry>
           <mesh>
-            <uri>model://rmuc_2026/meshes/rmuc_2026.stl</uri>
+            <uri>model://rmuc_2026/meshes/rmuc_2026_collision.stl</uri>
             <scale>0.1 0.1 0.1</scale>
           </mesh>
         </geometry>
