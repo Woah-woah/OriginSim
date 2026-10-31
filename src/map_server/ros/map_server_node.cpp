@@ -87,8 +87,7 @@ public:
     c.cloud_filter.sor_stddev = declare_parameter("sor.stddev_multiplier", 2.0);
     c.cloud_filter.min_density = declare_parameter("min_density_per_m2", 400.0);
     c.cloud_filter.min_component_area = declare_parameter("min_component_area", 0.0075);
-    c.cloud_filter.component_connection_distance =
-        declare_parameter("component_connection_distance", 0.55);
+    c.cloud_filter.component_connection_distance = declare_parameter("component_connection_distance", 0.55);
     c.cloud_memory.hit_rate = declare_parameter("memory.hit_rate", 5.0);
     c.cloud_memory.decay_rate = declare_parameter("memory.decay_rate", 0.7);
     c.cloud_memory.on_threshold = declare_parameter("memory.on_threshold", 0.6);
@@ -140,8 +139,7 @@ public:
       // 沿用原输入规则：纯文件名从定位包的 PCD 目录读取，带目录的路径保持原义。
       if (!file.is_absolute() && !file.has_parent_path())
       {
-        files.static_pcd = ament_index_cpp::get_package_share_directory("point_lio_with_grid_map") +
-                           "/PCD/" + files.static_pcd;
+        files.static_pcd = "/home/ubuntu/jazzy/sim_origion_nav/PCD/" + files.static_pcd; 
       }
     }
     if (dynamic_enabled && files.static_pcd.empty())
@@ -232,7 +230,6 @@ private:
       visualized_ = 0;
       debug_version_ = 0;
       dynamic_version_ = 0;
-      last_dynamic_.reset();
       publishStatic();
     }
     last_time_ = time;
@@ -271,25 +268,21 @@ private:
     std_msgs::msg::Header header;
     header.frame_id = "map";
     header.stamp = now();
-    // 派生距离、代价和动态障碍只能来自一次融合，禁止混用更新中的障碍。
+    // 动态层独立发布；派生消息记录自身使用的动态版本，状态消息确认发布水位。
     const auto publication = server_->publication();
     const auto maps = publication.maps;
-    if (!maps || !maps->dynamic_obstacles)
-    {
-      return;
-    }
-    const auto dynamic = maps->dynamic_obstacles;
+    const auto dynamic = publication.dynamic;
     const auto &health = publication.health;
     const auto &error = publication.worker_error;
     if (!error.empty())
       RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "地图派生计算异常：%s",
                             error.c_str());
-    if (!last_dynamic_ || !sameDynamicGeometry(*last_dynamic_, *dynamic))
+    if (dynamic && dynamic->version != dynamic_version_)
     {
       msg::DynamicObstacles out;
       out.header = header;
       out.producer_id = producer_id_;
-      out.version = ++dynamic_version_;
+      out.version = dynamic->version;
       out.input_version = dynamic->input_version;
       if (dynamic->cloud_mask)
       {
@@ -305,7 +298,7 @@ private:
         out.circles.push_back(c);
       }
       dynamic_pub_->publish(std::move(out));
-      last_dynamic_ = dynamic;
+      dynamic_version_ = dynamic->version;
     }
     if (maps && maps->version != published_)
     {
@@ -314,7 +307,7 @@ private:
       out.producer_id = producer_id_;
       out.info = metadata(maps->geometry);
       out.version = maps->version;
-      out.dynamic_version = dynamic_version_;
+      out.dynamic_version = maps->dynamic_version;
       out.input_version = maps->input_version;
       out.fused_obstacles = maps->fused_obstacles.data;
       out.distance_field = maps->distance_field.data;
@@ -334,7 +327,7 @@ private:
       published_ = maps->version;
     }
     // 晚于静态派生地图启动的 RViz 也要收到全量快照，不依赖下一次障碍变化。
-    if (debug_pub_->get_subscription_count() > 0 && maps->version != debug_version_)
+    if (maps && debug_pub_->get_subscription_count() > 0 && maps->version != debug_version_)
     {
       nav_msgs::msg::OccupancyGrid debug;
       debug.header = header;
@@ -434,7 +427,6 @@ private:
   rclcpp::Subscription<msg::RadarTargets>::SharedPtr allies_sub_, enemies_sub_;
   rclcpp::Publisher<msg::DerivedMap>::SharedPtr derived_pub_;
   uint64_t dynamic_version_{0};
-  std::shared_ptr<const DynamicObstacleView> last_dynamic_;
   rclcpp::Publisher<msg::StaticMap>::SharedPtr static_pub_;
   rclcpp::Publisher<msg::MapStatus>::SharedPtr status_pub_;
   rclcpp::Publisher<msg::DynamicObstacles>::SharedPtr dynamic_pub_;

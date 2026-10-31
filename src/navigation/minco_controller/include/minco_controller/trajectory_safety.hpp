@@ -226,7 +226,7 @@ public:
     // 已配对的动态几何完整包含在 fused_obstacles；仅不配对时额外查询最新层。
     // 这避免每个预测面片对同一批点云重复做栅格投影，不改变碰撞几何。
     unpaired_dynamic_ = grid.dynamicObstacles() &&
-      grid.derived().dynamic_version != grid.status().dynamic_version;
+      grid.derived().dynamic_version != grid.dynamicVersion();
     for (const auto & part : parts_) {
       for (const auto & p : part) {vertex_extent_ = std::max(vertex_extent_, p.norm());}
     }

@@ -14,9 +14,9 @@ map_server:
     grid_margin_factor: 0.7071067811865476  # 栅格离散余量系数；乘地图分辨率得到米，当前值为半格对角线
     update_frequency: 10.0                  # Hz，地图后台更新频率；障碍未变化时复用已有 EDT
 
-    dynamic_obstacles_enabled: false
+    dynamic_obstacles_enabled: true
     cloud_topic: /livox/scan          # /cloud_registered
-    static_pcd: "rmuc2026.pcd"
+    static_pcd: "rmuc_2025.pcd"
     cloud_timeout: 0.5                # s，点云观测超过此时间视为过期
     tf_wait_timeout: 0.15             # s，点云按观测时间查询 TF 时允许的等待时限
     max_cloud_points: 200000          # 原始仿真帧为 60000 点；与 MapServer 默认输入预算一致，超限仍拒绝
@@ -107,7 +107,7 @@ nav_executor:
       collision_iterations: 6  # 平滑后碰撞复检与约束修正的最大迭代次数
       topology_iterations: 3   # 平滑后拓扑约束复检与修正的最大迭代次数
     connector_executor:
-      enabled: true
+      enabled: false
       region_half_width: 1.2  # 矩形半宽
       entry_extension: 1.0    # 入口前面
       exit_extension: 0.3     # 出口后面
@@ -115,12 +115,12 @@ nav_executor:
       exit_debounce: 0.2      # s，持续离开通道区域达到此时间后，才释放占用状态
       pose_timeout: 0.5       # s，位姿缺失或过期时保留原通道状态，不提前释放
     recovery:
-      enabled: true
-      speed: 0.18          # m/s，只做单方向平移，不主动转车头
-      max_distance: 1.5    # m，单次脱困最大实际行驶距离
+      enabled: false
+      speed: 0.18          # m/s，匀速段固定速度；起停限加速度，单方向平移、不主动转头
+      max_distance: 2.5    # m，单次脱困最大实际行驶距离
       timeout: 30.0        # s，包含停车确认、选方向、执行和停稳
-      max_attempts: 3      # 同一目标累计次数，重规划不清零
-      cooldown: 3.0        # s，成功后冷却期再次卡住则终止，防止循环
+      max_attempts: 3      # 连续脱困次数上限；恢复持续行进或到点后清零
+      cooldown: 3.0        # s，恢复行进确认时间；期间再卡住继续计次脱困
     MPC:
       dt: 0.02                               # s，MPC 预测步长；需与控制频率一起考虑
       horizon: 25                            # 预测步数；当前预测时域为 25 × 0.02 = 0.5 s
@@ -164,7 +164,7 @@ topology_planner:
     use_sim_time: true
     TopoPlanner:
       topology_yaml: "topo26.yaml"
-      use_topology: true
+      use_topology: false
       allow_nearest_region_fallback: false  # 起终点不属于任何区域时，是否允许选择最近区域
       region_boundary_tolerance: 0.03       # m，识别点是否位于 Region 边界时的容差
       region_constraint_tolerance: 0.15     # m，路径区域归属复检的边界容差；不放宽障碍碰撞限制

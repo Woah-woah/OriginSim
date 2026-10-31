@@ -200,6 +200,7 @@ MapClient::MapClient(const std::string &name, const rclcpp::NodeOptions &options
             throw std::invalid_argument("Invalid dynamic version/size");
           auto dynamic = std::make_shared<DynamicObstacleView>();
           dynamic->input_version = m->input_version;
+          dynamic->version = m->version;
           if (!m->cloud_mask.empty())
           {
             auto g = geometry(m->cloud_info);
@@ -285,29 +286,38 @@ void MapClient::publishLocked()
     state_ = std::make_shared<MapView>(p);
     return;
   }
-  const bool failed =
-      p.status_.health.map_error ||
-      (policy_.require_cloud && p.status_.health.cloud != SourceStatus::VALID) ||
-      (policy_.require_radar && (p.status_.health.radar_allies != SourceStatus::VALID ||
-                                 p.status_.health.radar_enemies != SourceStatus::VALID ||
-                                 !p.status_.health.self_filter_verified));
-  if (!failed &&
-      (p.status_.derived_version < p.version() || p.status_.dynamic_version < p.dynamic_version_))
-    return;
-  auto next = std::make_shared<MapView>(p);
-  const double steady = steadySeconds();
   const bool previous = state_->status_.producer_id == p.status_.producer_id;
-  const auto waiting =
-      [&](uint64_t advertised, uint64_t received, uint64_t old_received, double since)
+  auto next = std::make_shared<MapView>(previous && state_->ready() ? *state_ : p);
+  next->status_ = p.status_;
+  // 分别提交已经被状态水位确认的层；新派生图还缺动态依赖时保留旧图，
+  // 但绝不阻塞已经确认的最新动态障碍，也不推迟传播失效的健康状态。
+  if (p.dynamic_version_ <= p.status_.dynamic_version &&
+      p.dynamic_->input_version <= p.status_.input_version)
+  {
+    next->dynamic_ = p.dynamic_;
+    next->dynamic_producer_ = p.dynamic_producer_;
+    next->dynamic_version_ = p.dynamic_version_;
+    next->dynamic_stamp_s_ = p.dynamic_stamp_s_;
+  }
+  if (p.version() <= p.status_.derived_version &&
+      p.derived_->input_version <= p.status_.input_version &&
+      p.derived_->dynamic_version <= next->dynamic_version_)
+  {
+    next->derived_ = p.derived_;
+    next->derived_producer_ = p.derived_producer_;
+  }
+  const double steady = steadySeconds();
+  const auto waiting = [&](uint64_t advertised, uint64_t received, double since)
   {
     if (advertised <= received)
       return 0.0;
-    return !previous || received > old_received || since == 0 ? steady : since;
+    // 未追上水位前不因部分进展重置计时，避免持续缺帧掩盖超时。
+    return !previous || since == 0 ? steady : since;
   };
-  next->derived_wait_since_ = waiting(p.status_.derived_version, p.version(), state_->version(),
+  next->derived_wait_since_ = waiting(p.status_.derived_version, next->version(),
                                       state_->derived_wait_since_);
-  next->dynamic_wait_since_ = waiting(p.status_.dynamic_version, p.dynamic_version_,
-                                      state_->dynamic_version_, state_->dynamic_wait_since_);
+  next->dynamic_wait_since_ = waiting(p.status_.dynamic_version, next->dynamic_version_,
+                                      state_->dynamic_wait_since_);
   state_ = std::move(next);
 }
 void MapClient::reject(uint8_t layer, const std::exception &error)
@@ -341,8 +351,12 @@ bool MapClient::isCurrent(const MapView &captured) const
 {
   const auto latest = view();
   const double ros = now().seconds(), steady = steadySeconds();
-  // 心跳可以刷新同一几何版本；生产者重启、地图更新或健康失效使旧快照立即不可用。
-  return latest->current(ros, steady, policy_) && captured.current(ros, steady, policy_) &&
+  // 时效由最新心跳验证；冻结的几何不会因旧心跳自然变老而使长规划无故失效。
+  // 仍拒绝非法快照、生产者重启、派生版本变化以及当前的健康或传输超时。
+  return latest->current(ros, steady, policy_) && captured.ready() &&
+         captured.dynamic_ && captured.dynamic_producer_ == captured.static_producer_ &&
+         captured.static_producer_ == captured.status().producer_id &&
+         captured.derived_->dynamic_version <= captured.dynamic_version_ &&
          captured.status().producer_id == latest->status().producer_id &&
          captured.version() == latest->version();
 }

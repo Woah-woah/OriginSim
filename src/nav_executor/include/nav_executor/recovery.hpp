@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <functional>
 #include <limits>
 #include <vector>
 
@@ -47,11 +46,10 @@ struct RecoveryPlan
 class RecoveryPlanner
 {
 public:
-  using Allowed = std::function<bool(const minco_controller::State &)>;
   explicit RecoveryPlanner(RecoveryConfig config);
   RecoveryPlan plan(const map_server::MapView & map, const map_server::Footprint & footprint,
     const minco_controller::State & start, const Eigen::Vector2d & reverse,
-    const std::vector<Eigen::Vector2d> & previous_endpoints = {}, Allowed allowed = {}) const;
+    const std::vector<Eigen::Vector2d> & previous_endpoints = {}) const;
 
 private:
   RecoveryConfig config_;

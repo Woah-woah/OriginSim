@@ -24,12 +24,6 @@ def generate_launch_description():
         parameters=[params_file, {'autostart': True}],
     )
 
-    pointlio = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(
-            get_package_share_directory('point_lio_with_grid_map'),
-            'launch', 'point_lio.launch.py'))
-    )
-
     ada = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('adaptive_lio'),
@@ -62,7 +56,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('map_server'), 'launch', 'map_server.launch.py')),
         launch_arguments={
-            'map': os.path.join(bringup_dir, 'map', 'rmuc_2026.yaml'),
+            'map': os.path.join(bringup_dir, 'map', 'rmuc_2025_normalized.yaml'),
             'use_sim_time': 'true',
             'params_file': params_file,
         }.items(),
@@ -74,7 +68,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # pointlio,
         ada,
         container,
         modify,

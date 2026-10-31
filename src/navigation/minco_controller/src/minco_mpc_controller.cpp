@@ -323,12 +323,11 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     field.checkEnvelope(observed, control, control_delay_, config_.control_period,
       "指令保持期间的轮廓安全检查");
   } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
-  const auto latest = costmap_->view();
-  if (!costmap_->isCurrent(snapshot) || latest->status().dynamic_version != snapshot.status().dynamic_version) {
-    if (costmap_->isUpdating()) {throw MapChanged("地图更新尚未配对，当前周期停车等待");}
-    if (costmap_->isCurrent(*latest) && latest->status().producer_id == snapshot.status().producer_id &&
-      latest->version() != snapshot.version())
-    {throw MapChanged("求解期间地图更新，停车后重新规划");}
+  // 本周期只使用冻结快照完成碰撞检查；正常换图留给下一周期，不撤销成功求解。
+  // 发布前仍要求最新地图健康、消息有效且生产者未重启。
+  if (!costmap_->isCurrent() ||
+    costmap_->view()->status().producer_id != snapshot.status().producer_id)
+  {
     throw std::runtime_error("求解期间地图或传感器状态已失效，拒绝输出速度");
   }
   geometry_msgs::msg::TwistStamped command;

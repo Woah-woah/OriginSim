@@ -5,6 +5,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -12,6 +13,13 @@
 
 namespace nav_executor
 {
+// 正常通道跟随中断应交给脱困处理，不作为定位或传感器故障。
+class ConnectorTraversalInterrupted : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
+
 enum class TaskState
 {
   IDLE,
@@ -19,6 +27,7 @@ enum class TaskState
   PLANNING,
   PATH_READY,
   RECOVERING,
+  RECOVERY_PENDING,
   TERMINAL_FAILED,
   SUCCEEDED,
   FAILED
@@ -103,9 +112,11 @@ public:
   bool executionFailed(PlanIdentity identity, const std::string & error, Clock::time_point now);
   bool beginRecovery(PlanIdentity identity, Clock::time_point now, int max_attempts);
   bool finishRecovery(PlanIdentity identity, bool success, const std::string & error,
-    Clock::time_point now, double cooldown);
+    Clock::time_point now);
   bool terminalFailure(PlanIdentity identity, const std::string & error);
   bool recoveryConfirmed(PlanIdentity identity) const;
+  bool confirmRecoveryProgress(Clock::time_point now, double stable_time, double minimum_progress);
+  const nav_msgs::msg::Path & recoveryRoute() const {return recovery_route_;}
   unsigned int recoveryAttempts() const {return recovery_attempts_;}
   bool executionSucceeded(PlanIdentity identity);
   bool observeProgress(
@@ -171,7 +182,9 @@ private:
   unsigned int recovery_attempts_{0};
   unsigned int planning_failures_{0};
   unsigned int max_planning_failures_{3};
-  Clock::time_point recovery_allowed_at_{};
+  nav_msgs::msg::Path recovery_route_;
+  Clock::time_point recovery_resume_at_{}, recovery_progress_at_{};
+  double recovery_resume_progress_{0.0}, recovery_last_progress_{0.0};
   ReplanReason last_replan_reason_{ReplanReason::NONE};
   std::optional<geometry_msgs::msg::PoseStamped> goal_;
   TaskState state_{TaskState::IDLE};

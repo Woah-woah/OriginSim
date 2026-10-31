@@ -35,11 +35,11 @@ nav_executor:
     max_planning_failures: 3
     recovery:
       enabled: true
-      speed: 0.18          # m/s，只做单方向平移，不主动转车头
+      speed: 0.18          # m/s，匀速段固定速度；起停限加速度，单方向平移、不主动转头
       max_distance: 1.5    # m，单次脱困最大实际行驶距离
       timeout: 30.0        # s，包含停车确认、选方向、执行和停稳
-      max_attempts: 3      # 同一目标累计次数，重规划不清零
-      cooldown: 3.0        # s，成功后冷却期再次卡住则终止，防止循环
+      max_attempts: 3      # 连续脱困次数上限；恢复持续行进或到点后清零
+      cooldown: 3.0        # s，恢复行进确认时间；期间再卡住继续计次脱困
     route_monitor:
       enabled: true
       deviation_distance: 0.5

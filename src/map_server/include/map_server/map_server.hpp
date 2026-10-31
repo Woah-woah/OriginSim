@@ -30,6 +30,7 @@ struct MapServerConfig
 struct MapPublication
 {
   std::shared_ptr<const DerivedMaps> maps;
+  std::shared_ptr<const DynamicObstacleView> dynamic;
   DynamicHealth health;
   uint64_t input_version{0};
   std::string worker_error;
@@ -65,6 +66,7 @@ public:
 
 private:
   DynamicHealth healthLocked() const;
+  void refreshDynamicLocked();
   void resetLocked();
   void run();
   MapServerConfig config_;
@@ -78,9 +80,10 @@ private:
   bool stopping_{false}, clock_seen_{false}, cloud_seen_{false}, cloud_error_{false};
   double ros_now_{0}, steady_now_{0}, cloud_stamp_{0}, cloud_received_{0}, accepted_cloud_{-1};
   double worker_steady_{0};
-  uint64_t input_version_{0}, epoch_{0}, derived_version_{0};
+  uint64_t input_version_{0}, epoch_{0}, derived_version_{0}, dynamic_version_{0};
   std::optional<RegisteredCloudFrame> pending_cloud_;
   std::shared_ptr<const BinaryGrid> cloud_mask_;
+  std::shared_ptr<const DynamicObstacleView> dynamic_;
   std::shared_ptr<const DerivedMaps> derived_;
   std::string last_error_, worker_error_;
 };

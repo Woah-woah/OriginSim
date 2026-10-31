@@ -33,7 +33,7 @@ public:
     return static_ && derived_ && static_producer_ == derived_producer_ &&
            static_->geometry == derived_->geometry && !error_mask_;
   }
-  // 健康与版本配对分开判断：健康的新图正在传输时允许停车等待，但不允许输出运动。
+  // 健康状态和传输水位分开判断；缺失更新只允许在有界时间内使用已确认快照。
   bool healthy(double ros_now, double steady_now, const MapPolicy &policy) const
   {
     if (!ready() || !dynamic_ || status_.producer_id != static_producer_ ||
@@ -52,10 +52,10 @@ public:
   bool current(double ros_now, double steady_now, const MapPolicy &policy) const
   {
     return healthy(ros_now, steady_now, policy) &&
-           derived_->dynamic_version == dynamic_version_ &&
-           dynamic_->input_version == derived_->input_version &&
-           status_.derived_version == derived_->version &&
-           status_.dynamic_version == dynamic_version_;
+           derived_->dynamic_version <= dynamic_version_ &&
+           status_.derived_version >= derived_->version &&
+           status_.dynamic_version >= dynamic_version_ &&
+           status_.input_version >= std::max(derived_->input_version, dynamic_->input_version);
   }
   // 一次插值同时返回米制距离和世界坐标梯度，查询不会修改冻结视图。
   bool sampleDistance(double x, double y, DistanceSample &sample) const
@@ -115,6 +115,10 @@ public:
   uint64_t version() const
   {
     return derived_ ? derived_->version : 0;
+  }
+  uint64_t dynamicVersion() const
+  {
+    return dynamic_version_;
   }
   int64_t dynamicStampNs() const
   {

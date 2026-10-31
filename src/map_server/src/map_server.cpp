@@ -64,6 +64,7 @@ void MapServer::resetLocked()
   pending_cloud_.reset();
   worker_error_.clear();
   cloud_mask_.reset();
+  dynamic_.reset();
   derived_.reset();
   cloud_seen_ = false;
   cloud_error_ = false;
@@ -83,6 +84,8 @@ void MapServer::advanceTime(double now, double steady)
   ros_now_ = now;
   steady_now_ = steady;
   clock_seen_ = true;
+  if (dynamic_)
+    refreshDynamicLocked();
   wake_.notify_one();
 }
 void MapServer::reportCloudError()
@@ -111,6 +114,7 @@ void MapServer::updateRegisteredCloud(const RegisteredCloudFrame &f)
     return;
   pending_cloud_ = f;
   accepted_cloud_ = f.observation_stamp_s;
+  ++input_version_;
   wake_.notify_one();
 }
 void MapServer::updateRadarAllies(const RadarTargetFrame &f)
@@ -120,6 +124,7 @@ void MapServer::updateRadarAllies(const RadarTargetFrame &f)
     throw std::invalid_argument("Radar clocks outside current clock domain");
   if (allies_.update(f, RadarSource::ALLY))
     ++input_version_;
+  refreshDynamicLocked();
   wake_.notify_one();
 }
 void MapServer::updateRadarEnemies(const RadarTargetFrame &f)
@@ -129,7 +134,22 @@ void MapServer::updateRadarEnemies(const RadarTargetFrame &f)
     throw std::invalid_argument("Radar clocks outside current clock domain");
   if (enemies_.update(f, RadarSource::ENEMY))
     ++input_version_;
+  refreshDynamicLocked();
   wake_.notify_one();
+}
+void MapServer::refreshDynamicLocked()
+{
+  auto view = std::make_shared<DynamicObstacleView>();
+  view->input_version = input_version_;
+  view->cloud_mask = cloud_mask_;
+  for (const auto &target : allies_.active(ros_now_, steady_now_))
+    view->circles.push_back({target.xy_map, target.physical_radius_m});
+  for (const auto &target : enemies_.active(ros_now_, steady_now_))
+    view->circles.push_back({target.xy_map, target.physical_radius_m});
+  if (!dynamic_ || !sameDynamicGeometry(*dynamic_, *view))
+    ++dynamic_version_;
+  view->version = dynamic_version_;
+  dynamic_ = std::move(view);
 }
 DynamicHealth MapServer::healthLocked() const
 {
@@ -164,19 +184,12 @@ DynamicHealth MapServer::getDynamicHealth() const
 MapPublication MapServer::publication() const
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  return {derived_, healthLocked(), input_version_, worker_error_};
+  return {derived_, dynamic_, healthLocked(), input_version_, worker_error_};
 }
 std::shared_ptr<const DynamicObstacleView> MapServer::getLatestDynamicObstacles() const
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto v = std::make_shared<DynamicObstacleView>();
-  v->input_version = input_version_;
-  v->cloud_mask = cloud_mask_;
-  for (const auto &t : allies_.active(ros_now_, steady_now_))
-    v->circles.push_back({t.xy_map, t.physical_radius_m});
-  for (const auto &t : enemies_.active(ros_now_, steady_now_))
-    v->circles.push_back({t.xy_map, t.physical_radius_m});
-  return v;
+  return dynamic_;
 }
 std::shared_ptr<const StaticMap> MapServer::getStaticMap() const
 {
@@ -336,7 +349,6 @@ void MapServer::run()
           cloud_error_ = false;
           cloud_stamp_ = f.observation_stamp_s;
           cloud_received_ = f.received_stamp_s;
-          ++input_version_;
         }
       }
       std::shared_ptr<const BinaryGrid> mask;
@@ -348,56 +360,38 @@ void MapServer::run()
                         window.x * window.resolution, window.y * window.resolution},
                        std::move(cells.data)});
       }
-      std::shared_ptr<DynamicObstacleView> view = std::make_shared<DynamicObstacleView>();
+      std::shared_ptr<const DynamicObstacleView> view;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         if (epoch != epoch_)
           continue;
         cloud_mask_ = mask;
-        view->cloud_mask = mask;
         now = ros_now_;
         steady = steady_now_;
-        worker_error_.clear();
-        worker_steady_ = steady_now_;
-        for (const auto &t : allies_.active(now, steady))
-          view->circles.push_back({t.xy_map, t.physical_radius_m});
-        for (const auto &t : enemies_.active(now, steady))
-          view->circles.push_back({t.xy_map, t.physical_radius_m});
-        view->input_version = input_version_;
-        input = input_version_;
+        // 点云处理完成即刷新动态层；雷达输入与过期处理也独立刷新，不等待 EDT。
+        refreshDynamicLocked();
+        view = dynamic_;
+        input = view->input_version;
       }
       auto result = std::make_shared<DerivedMaps>();
       result->geometry = static_->geometry;
       result->dynamic_obstacles = view;
+      result->dynamic_version = view->version;
       const auto fusion_begin = Clock::now();
       result->fused_obstacles = static_->occupancy;
       if (mask)
         overlayConservative(result->fused_obstacles, *mask);
       rasterizeObstacles(result->fused_obstacles, view->circles);
       result->fusion_ms = elapsed(fusion_begin);
-      const auto previous = getDerivedMaps();
       const bool obstacles_changed = result->fused_obstacles.data != last_fused;
-      const bool dynamic_changed = !previous || !previous->dynamic_obstacles ||
-                                   !sameDynamicGeometry(*previous->dynamic_obstacles, *view);
-      if (obstacles_changed || dynamic_changed)
+      if (obstacles_changed)
       {
-        if (!obstacles_changed && previous)
-        {
-          // 地图外的雷达目标或窗口几何仍需发布，但沿用已经计算好的距离和浮点代价。
-          result = std::make_shared<DerivedMaps>(*previous);
-          result->dynamic_obstacles = view;
-          result->edt_ms = 0;
-          result->costmap_ms = 0;
-        }
-        else
-        {
-          const auto edt_begin = Clock::now();
-          result->distance_field = preciseEdt(result->fused_obstacles);
-          result->edt_ms = elapsed(edt_begin);
-          const auto cost_begin = Clock::now();
-          generateCosts(*result, config_.cost);
-          result->costmap_ms = elapsed(cost_begin);
-        }
+        const auto edt_begin = Clock::now();
+        result->distance_field = preciseEdt(result->fused_obstacles);
+        result->edt_ms = elapsed(edt_begin);
+        const auto cost_begin = Clock::now();
+        generateCosts(*result, config_.cost);
+        result->costmap_ms = elapsed(cost_begin);
         result->version = ++version;
         result->input_version = input;
         result->generated_at_s = now;
@@ -409,6 +403,13 @@ void MapServer::run()
           derived_version_ = result->version;
           derived_ = std::move(result);
         }
+      }
+      // 栅格未变时保留整个不可变派生对象，不重算、不复制 EDT/Costmap。
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (epoch == epoch_)
+      {
+        worker_error_.clear();
+        worker_steady_ = steady_now_;
       }
     }
     catch (const std::exception &error)

@@ -534,9 +534,23 @@ public:
           view->status().dynamic_version, static_cast<unsigned>(view->status().health.cloud),
           costmap_->isUpdating() ? "是" : "否");
       }
-      if (auto request = tasks_.nextRequest(ready_, now)) {
+      // 静态地图常早于定位就绪；尚无机器人 TF 时保留目标等待，不消耗规划重试。
+      const bool planning_ready = ready_.load() && pose_available && costmap_->isCurrent();
+      // 脱困后的原目标仍规划不通，输入就绪后继续下一次 Escape。
+      if (tasks_.state() == TaskState::RECOVERY_PENDING && planning_ready) {
+        RCLCPP_WARN(get_logger(), "脱困后仍无法规划原目标，继续 Recovery：%s", tasks_.error().c_str());
+        requestRecovery(tasks_.identity());
+      }
+      const auto state_before_request = tasks_.state();
+      if (auto request = tasks_.nextRequest(planning_ready, now)) {
         worker_->submit(std::move(*request));
         publishTask();
+      } else if (tasks_.state() != state_before_request) {
+        publishTask();
+      }
+      if (tasks_.state() == TaskState::WAITING_FOR_MAP && costmap_->isCurrent() && !pose_available) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+          "目标已保留，等待机器人定位 TF 就绪；尚未开始规划或运动");
       }
     });
     publishTask();
@@ -559,7 +573,9 @@ public:
           }
           return;
         }
-        if (kind == ExecutionFailure::CONTROLLER_INFEASIBLE && requestRecovery(identity)) {return;}
+        if ((kind == ExecutionFailure::CONTROLLER_INFEASIBLE ||
+          kind == ExecutionFailure::CONNECTOR_TRAVERSAL_INTERRUPTED) &&
+          requestRecovery(identity)) {return;}
         if (tasks_.terminalFailure(identity, error)) {
           worker_->invalidate(tasks_.generation());
           publishTask();
@@ -575,9 +591,14 @@ public:
         return tasks_.isPlanConfirmed(identity) || tasks_.recoveryConfirmed(identity);
       },
       [this](PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose) {
-        if (tasks_.observeProgress(identity, pose, connector_entry_clearance_)) {
-          publishTask();
+        const bool changed = tasks_.observeProgress(identity, pose, connector_entry_clearance_);
+        if (tasks_.confirmRecoveryProgress(TaskManager::Clock::now(),
+          get_parameter("recovery.cooldown").as_double(),
+          get_parameter("route_monitor.minimum_progress").as_double()))
+        {
+          RCLCPP_INFO(get_logger(), "原目标导航已恢复持续前进，Recovery 连续尝试计数清零");
         }
+        if (changed) {publishTask();}
       },
       [this](PlanIdentity identity,
         const geometry_msgs::msg::PoseStamped & pose,
@@ -592,11 +613,15 @@ public:
         }
       },
       [this](PlanIdentity identity, bool success, const std::string & reason) {
-        if (tasks_.finishRecovery(identity, success, reason, TaskManager::Clock::now(),
-          get_parameter("recovery.cooldown").as_double()))
+        if (tasks_.finishRecovery(identity, success, reason, TaskManager::Clock::now()))
         {
           monitor_->reset();
           worker_->invalidate(tasks_.generation());
+          if (success) {
+            // 机构区域退出只影响低头指令，任务仍继续同一目标，等待新路径接管。
+            RCLCPP_INFO(get_logger(), "Recovery 已停稳，保留目标编号=%lu，重新规划并继续导航",
+              static_cast<unsigned long>(tasks_.identity().goal_id));
+          }
           publishTask();
         }
       });
@@ -634,25 +659,25 @@ private:
 
   bool requestRecovery(PlanIdentity identity)
   {
-    if (!executor_ || !tasks_.isPlanConfirmed(identity) ||
+    if (!executor_ ||
+      (!tasks_.isPlanConfirmed(identity) && tasks_.state() != TaskState::RECOVERY_PENDING) ||
       !get_parameter("recovery.enabled").as_bool()) {return false;}
-    const auto route = tasks_.plan().full_path;
     if (!tasks_.beginRecovery(identity, TaskManager::Clock::now(),
       static_cast<int>(get_parameter("recovery.max_attempts").as_int())))
     {
-      executor_->stop("Recovery 次数或冷却限制");
+      executor_->stop("Recovery 连续尝试次数耗尽");
       publishTask();
       return false;
     }
     worker_->invalidate(tasks_.generation());
     monitor_->reset();
-    if (!executor_->startRecovery(route, identity)) {
+    if (!executor_->startRecovery(tasks_.recoveryRoute(), identity, tasks_.recoveryAttempts() == 1)) {
       tasks_.finishRecovery(identity, false, "Recovery 无法启动或总距离耗尽",
-        TaskManager::Clock::now(), get_parameter("recovery.cooldown").as_double());
+        TaskManager::Clock::now());
       publishTask();
       return false;
     }
-    RCLCPP_WARN(get_logger(), "进入 Recovery：目标=%lu，路径=%lu，累计尝试=%u",
+    RCLCPP_WARN(get_logger(), "进入 Recovery：目标=%lu，路径=%lu，本轮连续尝试=%u",
       identity.goal_id, identity.plan_generation, tasks_.recoveryAttempts());
     publishTask();
     return true;

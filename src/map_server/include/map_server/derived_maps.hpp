@@ -18,7 +18,7 @@ struct ObstacleCircle
 };
 struct DynamicObstacleView
 {
-  uint64_t input_version{0};
+  uint64_t input_version{0}, version{0};
   std::shared_ptr<const BinaryGrid> cloud_mask;
   std::vector<ObstacleCircle> circles;
 };
@@ -47,7 +47,7 @@ inline bool sameDynamicGeometry(const DynamicObstacleView &a, const DynamicObsta
 struct DerivedMaps
 {
   uint64_t version{0}, input_version{0}; // version = obstacle_version = derived_version
-  uint64_t dynamic_version{0};           // ROS 传输中明确绑定同一批动态几何。
+  uint64_t dynamic_version{0}; // 生成本地图时使用的动态几何水位，允许最新动态层继续前进。
   std::shared_ptr<const DynamicObstacleView> dynamic_obstacles;
   double robot_radius_m{0.15}, inflation_radius_m{0.55}, cost_scaling_factor{5.0};
   GridGeometry geometry;

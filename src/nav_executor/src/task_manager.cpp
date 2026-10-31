@@ -35,7 +35,7 @@ bool TaskManager::setGoal(const geometry_msgs::msg::PoseStamped & goal)
   }
   recovery_attempts_ = 0;
   planning_failures_ = 0;
-  recovery_allowed_at_ = {};
+  recovery_route_ = nav_msgs::msg::Path{};
   goal_ = goal;
   ++identity_.goal_id;
   next_route_plan_at_ = Clock::time_point{};
@@ -63,6 +63,9 @@ void TaskManager::cancel()
 {
   ++identity_.plan_generation;
   goal_.reset();
+  recovery_attempts_ = 0;
+  planning_failures_ = 0;
+  recovery_route_ = nav_msgs::msg::Path{};
   plan_ = {};
   resetProgress();
   error_.clear();
@@ -77,6 +80,7 @@ std::optional<PlanningRequest> TaskManager::nextRequest(bool map_ready, Clock::t
 {
   if (!goal_ || state_ == TaskState::PLANNING || state_ == TaskState::PATH_READY ||
       state_ == TaskState::SUCCEEDED || state_ == TaskState::RECOVERING ||
+      state_ == TaskState::RECOVERY_PENDING ||
       state_ == TaskState::TERMINAL_FAILED || now < retry_at_)
   {
     return std::nullopt;
@@ -181,7 +185,10 @@ bool TaskManager::accept(PlanningResult result, Clock::time_point now)
     plan_ = {};
     resetProgress();
     retry_at_ = now + retry_delay_;
-    state_ = ++planning_failures_ >= max_planning_failures_ ? TaskState::TERMINAL_FAILED : TaskState::FAILED;
+    // 已脱困但仍规划不通，交回同一轮 Recovery；不能绕过 max_attempts 无限规划。
+    ++planning_failures_;
+    state_ = recovery_attempts_ > 0 ? TaskState::RECOVERY_PENDING :
+      (planning_failures_ >= max_planning_failures_ ? TaskState::TERMINAL_FAILED : TaskState::FAILED);
   } else {
     plan_ = std::move(result.plan);
     resetProgress();
@@ -199,6 +206,9 @@ bool TaskManager::accept(PlanningResult result, Clock::time_point now)
       segment_ends_.push_back(path_arcs_[count - 1]);
     }
     error_.clear();
+    planning_failures_ = 0;
+    recovery_resume_at_ = recovery_progress_at_ = now;
+    recovery_resume_progress_ = recovery_last_progress_ = 0;
     state_ = TaskState::PATH_READY;
   }
   return true;
@@ -217,6 +227,8 @@ const char * TaskManager::stateName(TaskState state)
     return "PATH_READY";
   case TaskState::RECOVERING:
     return "RECOVERING";
+  case TaskState::RECOVERY_PENDING:
+    return "RECOVERY_PENDING";
   case TaskState::TERMINAL_FAILED:
     return "TERMINAL_FAILED";
   case TaskState::SUCCEEDED:
@@ -246,12 +258,19 @@ bool TaskManager::executionFailed(
 // Recovery 保留目标和通道机构区域；旧导航路径在此状态不能输出控制。
 bool TaskManager::beginRecovery(PlanIdentity identity, Clock::time_point now, int max_attempts)
 {
-  if (!isPlanConfirmed(identity)) {return false;}
-  if (recovery_attempts_ >= static_cast<unsigned int>(max_attempts) || now < recovery_allowed_at_) {
-    terminalFailure(identity, "Recovery 尝试耗尽或冷却期再次卡住");
+  if (identity != identity_ || !goal_ ||
+    (!isPlanConfirmed(identity) && state_ != TaskState::RECOVERY_PENDING)) {return false;}
+  if (max_attempts < 1 || recovery_attempts_ >= static_cast<unsigned int>(max_attempts)) {
+    terminalFailure(identity, "Recovery 连续尝试次数耗尽");
+    return false;
+  }
+  if (isPlanConfirmed(identity)) {recovery_route_ = plan_.full_path;}
+  if (recovery_route_.poses.empty()) {
+    terminalFailure(identity, "Recovery 缺少原路径参考");
     return false;
   }
   ++recovery_attempts_;
+  recovery_progress_at_ = now;
   state_ = TaskState::RECOVERING;
   return true;
 }
@@ -273,16 +292,37 @@ bool TaskManager::terminalFailure(PlanIdentity identity, const std::string & err
 }
 
 bool TaskManager::finishRecovery(PlanIdentity identity, bool success, const std::string & error,
-  Clock::time_point now, double cooldown)
+  Clock::time_point now)
 {
   if (!recoveryConfirmed(identity)) {return false;}
   if (!success) {return terminalFailure(identity, error);}
-  recovery_allowed_at_ = now + std::chrono::duration_cast<Clock::duration>(
-    std::chrono::duration<double>(cooldown));
   // 脱困允许退出原通道，重新由拓扑规划器判断区域和后续通行方向。
   active_connector_.reset();
   replan();
   retry_at_ = now;
+  return true;
+}
+
+// 规划成功本身不代表已脱困；普通导航持续产生实际前进后才清零连续尝试。
+bool TaskManager::confirmRecoveryProgress(Clock::time_point now,
+  double stable_time, double minimum_progress)
+{
+  if (!isPlanConfirmed(identity_) || recovery_attempts_ == 0) {return false;}
+  if (std::chrono::duration<double>(now - recovery_progress_at_).count() > stable_time) {
+    recovery_resume_at_ = now;
+    recovery_resume_progress_ = route_progress_;
+  }
+  if (route_progress_ - recovery_last_progress_ >= minimum_progress) {
+    recovery_last_progress_ = route_progress_;
+    recovery_progress_at_ = now;
+  }
+  if (std::chrono::duration<double>(now - recovery_resume_at_).count() < stable_time ||
+    route_progress_ - recovery_resume_progress_ < 3 * minimum_progress ||
+    std::chrono::duration<double>(now - recovery_progress_at_).count() > stable_time * 0.5)
+  {return false;}
+  recovery_attempts_ = 0;
+  planning_failures_ = 0;
+  recovery_route_ = nav_msgs::msg::Path{};
   return true;
 }
 
@@ -292,6 +332,9 @@ bool TaskManager::executionSucceeded(PlanIdentity identity)
     return false;
   }
   active_connector_.reset();
+  recovery_attempts_ = 0;
+  planning_failures_ = 0;
+  recovery_route_ = nav_msgs::msg::Path{};
   segment_index_ = plan_.segments.size();
   state_ = TaskState::SUCCEEDED;
   error_.clear();
@@ -386,7 +429,7 @@ bool TaskManager::observeProgress(
       if (along < std::min(-0.05, first_progress - 0.05) || along < connector_progress_ - 0.05 ||
           lateral > segment.corridor_half_width)
       {
-        throw std::runtime_error("Robot left directed connector corridor or reversed traversal");
+        throw ConnectorTraversalInterrupted("Robot left directed connector corridor or reversed traversal");
       }
       connector_progress_ = std::max(connector_progress_, along);
       active_connector_ = segment;

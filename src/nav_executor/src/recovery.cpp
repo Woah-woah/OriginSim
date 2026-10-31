@@ -66,8 +66,7 @@ RecoveryPlanner::RecoveryPlanner(RecoveryConfig config) : config_(config)
 
 RecoveryPlan RecoveryPlanner::plan(const map_server::MapView & map,
   const map_server::Footprint & footprint, const minco_controller::State & start,
-  const Eigen::Vector2d & reverse, const std::vector<Eigen::Vector2d> & previous_endpoints,
-  Allowed allowed) const
+  const Eigen::Vector2d & reverse, const std::vector<Eigen::Vector2d> & previous_endpoints) const
 {
   using Clock = std::chrono::steady_clock;
   const auto deadline = Clock::now() + std::chrono::duration<double>(config_.planning_timeout);
@@ -117,7 +116,6 @@ RecoveryPlan RecoveryPlanner::plan(const map_server::MapView & map,
       auto end = start;
       end.x += direction.x() * length;
       end.y += direction.y() * length;
-      if (allowed && !allowed(end)) {blocked[i] = true; continue;}
       try {safety.checkMotion(start, end, "Recovery 单方向连续扫掠");}
       catch (const std::runtime_error &) {blocked[i] = true; continue;}
       double integral_cost = 0;
