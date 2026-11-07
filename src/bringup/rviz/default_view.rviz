@@ -17,6 +17,9 @@ Panels:
         - /PointCloud21/Topic1
         - /MarkerArray2
         - /MarkerArray2/Topic1
+        - /Path1
+        - /Path1/Status1
+        - /Path1/Topic1
       Splitter Ratio: 0.5833333134651184
     Tree Height: 751
   - Class: rviz_common/Selection
@@ -297,13 +300,41 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        connectors: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /TopoPlanner/connector_debug_markers
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: Path
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /nav_executor/recovery_path
       Value: true
   Enabled: true
   Global Options:
@@ -349,16 +380,16 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 7.795460224151611
+      Distance: 11.603718757629395
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 4.6507792472839355
-        Y: -3.41884708404541
-        Z: 12.018778800964355
+        X: 6.799842834472656
+        Y: -1.3610647916793823
+        Z: 12.020895957946777
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -367,7 +398,7 @@ Visualization Manager:
       Pitch: 1.5697963237762451
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 3.131359338760376
+      Yaw: 3.1363565921783447
     Saved: ~
 Window Geometry:
   Displays:

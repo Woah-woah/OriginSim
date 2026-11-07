@@ -1,4 +1,3 @@
-"""Start localization, maps, visualization and point cloud processing."""
 
 import os
 

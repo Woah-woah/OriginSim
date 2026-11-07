@@ -47,7 +47,7 @@ public:
         );
 
         pub_fake_timer = this->create_wall_timer(
-            std::chrono::milliseconds(10),std::bind(&FakeBaselink::pub_fake_callback,this)
+            std::chrono::milliseconds(5),std::bind(&FakeBaselink::pub_fake_callback,this)
         );
 
         init_base_link_fake();

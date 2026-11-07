@@ -28,7 +28,7 @@ struct RecoveryConfig
   void validate() const;
 };
 
-struct RecoveryCandidate
+struct RecoveryCandidate   // 单个候选者
 {
   std::vector<minco_controller::State> states;
   double score{-std::numeric_limits<double>::infinity()};
@@ -37,8 +37,8 @@ struct RecoveryCandidate
 
 struct RecoveryPlan
 {
-  RecoveryCandidate selected;
-  std::vector<RecoveryCandidate> candidates;
+  RecoveryCandidate selected;            // 被选中的目标候选者
+  std::vector<RecoveryCandidate> candidates;          // 所有候选者
   uint64_t producer{0}, version{0}, dynamic_version{0};
 };
 

@@ -95,6 +95,10 @@ struct PlanningResult
   topology_global_planner::TopologyPlan plan;
   std::string error;
   nav_msgs::msg::Path original_path;
+  // 规划器报告的阻塞位置，避免把后续拓扑分段起点误当成机器人当前位置。
+  std::optional<geometry_msgs::msg::PoseStamped> blocked_start;
+  // 主线程确认当前位置实际碰撞或被全局起点净空约束阻塞后填写。
+  std::optional<geometry_msgs::msg::PoseStamped> recovery_start;
 };
 
 // 仅由串行回调线程访问，所有截止时间使用单调时钟

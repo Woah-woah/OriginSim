@@ -1,5 +1,6 @@
 // Adapted from Walker152/navi_minco_bit, commit 8288b7520ecb635bb27f16b0d49e3cf304f37a72.
 #include "minco_controller/mpc_solver.hpp"
+#include "minco_controller/recovery_profile.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -350,6 +351,7 @@ bool MpcSolver::solve(const State & curr,
   const EnvelopeSampler & sample_envelope, const CommandModel & command_model,
   const MotionSampler & sample_motion)
 {
+  RecoveryTimer timer(RecoveryMetric::SOLVE);
   out_u = {};
   if (out_pred) {out_pred->clear();}
   if (!std::isfinite(command_model.phase) || !std::isfinite(command_model.deadzone) ||
@@ -542,6 +544,7 @@ bool MpcSolver::solveOnce(const State & curr,
   const std::vector<CostLinearization> & costs,
   Control & out_u, std::vector<State> * out_pred)
 {
+  RecoveryTimer timer(RecoveryMetric::QP);
   out_u = Control{};
   if (out_pred) {out_pred->clear();}
   last_status_ = -1;

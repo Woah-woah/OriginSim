@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "map_server/map_client.hpp"
 #include "map_server/footprint.hpp"
@@ -16,8 +17,12 @@ namespace minco_controller
 {
 namespace
 {
-double wrap(double angle) {return std::atan2(std::sin(angle), std::cos(angle));}
 
+double wrap(double angle) {
+  return std::atan2(std::sin(angle), std::cos(angle));
+}
+
+// 判断位姿合法性
 bool finitePose(const geometry_msgs::msg::Pose & pose)
 {
   const auto & p = pose.position;
@@ -29,16 +34,21 @@ bool finitePose(const geometry_msgs::msg::Pose & pose)
 
 }
 
-void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
-  const std::string & name, const std::shared_ptr<map_server::MapClient> & costmap)
+
+void MincoMpcController::initialize(
+  const rclcpp::Node::WeakPtr & parent,
+  const std::string & name,
+  const std::shared_ptr<map_server::MapClient> & costmap)
 {
   const auto node = parent.lock();
   if (solver_) {throw std::logic_error("局部控制器已经初始化，不能重复初始化");}
   if (!node || !costmap || name.empty()) {
     throw std::invalid_argument("局部控制器缺少节点、名称或地图客户端");
   }
+
   rcl_interfaces::msg::ParameterDescriptor descriptor;
   descriptor.read_only = true;
+
   const auto parameter = [&](const std::string & key, auto value) {
       using T = decltype(value);
       const auto full_name = name + "." + key;
@@ -47,17 +57,21 @@ void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
       }
       return node->get_parameter(full_name).get_value<T>();
     };
+
   config_.dt = parameter("dt", 0.05);
   config_.horizon = parameter("horizon", 10);
   const auto q = parameter("Q", std::vector<double>{5.0, 5.0, 2.0});
   const auto r = parameter("R", std::vector<double>{1.0, 1.0, 0.5});
+
   if (q.size() != 3 || r.size() != 3) {throw std::invalid_argument("局部控制器的 Q、R 参数必须各包含三个权重");}
   config_.Q = Eigen::Vector3d(q[0], q[1], q[2]);
   config_.R = Eigen::Vector3d(r[0], r[1], r[2]);
   const auto delta_weight = parameter("control_delta_weight", std::vector<double>{2.0, 2.0, 0.5});
+
   if (delta_weight.size() != 3) {
     throw std::invalid_argument("速度变化权重必须包含三个数值");
   }
+
   config_.control_delta_weight = Eigen::Vector3d(delta_weight[0], delta_weight[1], delta_weight[2]);
   config_.q_along = parameter("q_along", 3.0);
   config_.q_cross = parameter("q_cross", 12.0);
@@ -84,11 +98,13 @@ void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
   reference_yaw_rate_ = parameter("reference_yaw_rate", 1.0);
   control_delay_ = parameter("control_delay_compensation", 0.10);
   config_.safety_preview_time = control_delay_;
-  const double frequency = node->has_parameter("controller_frequency") ?
-    node->get_parameter("controller_frequency").as_double() : 20.0;
+
+  const double frequency = node->get_parameter("controller_frequency").as_double();
+
   if (!std::isfinite(frequency) || frequency <= 0.0) {
     throw std::invalid_argument("控制频率必须大于零");
   }
+
   config_.control_period = 1.0 / frequency;
   output_delay_ = parameter("output_delay", 0.025);
   deadzone_ = parameter("deadzone_speed_threshold", 0.02);
@@ -96,18 +112,24 @@ void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
   small_gyro_mode_ = parameter("use_small_gyro_mode", true);
   fixed_wz_ = parameter("fixed_wz", 0.0);
   collision_margin_ = parameter("collision_margin", 0.02);
-  for (const auto value : {reference_speed_, reference_acceleration_, reference_yaw_rate_}) {
+
+
+  for (const auto value : {reference_speed_, reference_acceleration_, reference_yaw_rate_})
+  {
     if (!std::isfinite(value) || value <= 0.0) {
       throw std::invalid_argument("参考速度、加速度和角速度上限必须是大于零的有限数值");
     }
   }
-  for (const auto value : {control_delay_, output_delay_, deadzone_, velocity_noise_threshold_,
-    collision_margin_})
+
+
+  for (const auto value : {control_delay_, output_delay_, deadzone_, velocity_noise_threshold_, collision_margin_})
   {
     if (!std::isfinite(value) || value < 0.0) {
       throw std::invalid_argument("延迟、速度死区、噪声阈值和安全余量不能为负数或无效数值");
     }
   }
+
+
   if (control_delay_ > 2.0 || output_delay_ > 1.0 || !std::isfinite(fixed_wz_) ||
     fixed_wz_ < config_.omega_min || fixed_wz_ > config_.omega_max)
   {throw std::invalid_argument("控制延迟或固定角速度参数无效");}
@@ -124,61 +146,146 @@ void MincoMpcController::initialize(const rclcpp::Node::WeakPtr & parent,
     costmap->getBaseFrameID().c_str());
 }
 
+
 void MincoMpcController::reset()
 {
-  if (solver_) {solver_->reset();}
+  if (solver_) {solver_->setConfig(config_);}
   trajectory_.clear();
   plan_frame_.clear();
   progress_time_ = 0.0;
+  recovery_mode_ = false;
+  recovery_contacts_ = {};
+  recovery_acceleration_ = 0.0;
 }
+
 
 void MincoMpcController::notifyZeroCommandPublished()
 {
   if (solver_) {solver_->setPreviousControl(Control{});}
 }
 
-void MincoMpcController::setPlan(const nav_msgs::msg::Path & path)
+
+void MincoMpcController::setPlan(
+  const nav_msgs::msg::Path & path,
+  const double recovery_speed,
+  const double recovery_acceleration)
 {
-  if (!solver_) {throw std::logic_error("请先初始化局部控制器，再设置路径");}
+  if (!solver_) {
+    throw std::logic_error("请先初始化局部控制器，再设置路径");
+  }
   reset();
+
   if (path.header.frame_id.empty() || path.poses.empty()) {
     throw std::invalid_argument("局部控制器收到空路径或缺少坐标系名称");
   }
+
   std::vector<ReferencePoint> points;
   points.reserve(path.poses.size());
   for (const auto & pose : path.poses) {
-    if (!finitePose(pose.pose) || (!pose.header.frame_id.empty() &&
-      pose.header.frame_id != path.header.frame_id))
-    {throw std::invalid_argument("局部路径包含无效位姿或混用了不同坐标系");}
+    if (!finitePose(pose.pose) || (!pose.header.frame_id.empty() && pose.header.frame_id != path.header.frame_id))
+    {
+      throw std::invalid_argument("局部路径包含无效位姿或混用了不同坐标系");
+    }
+
     ReferencePoint point;
     point.pos = Eigen::Vector2d(pose.pose.position.x, pose.pose.position.y);
     point.heading_yaw = tf2::getYaw(pose.pose.orientation);
     points.push_back(point);
   }
   PathTrajectory candidate;
-  candidate.setPath(points, reference_speed_, reference_acceleration_, reference_yaw_rate_,
-    !small_gyro_mode_);
+  // 是否正在设置 Recovery 路径
+  const bool recovery = recovery_speed != 0.0 || recovery_acceleration != 0.0;
+
+  if (recovery &&
+      (!std::isfinite(recovery_speed) ||
+      !std::isfinite(recovery_acceleration) ||
+      recovery_speed <= 0.0 ||
+      recovery_acceleration <= 0.0))
+  {
+      throw std::invalid_argument("Recovery 运动参数无效");
+  }
+
+  // Recovery 采用固定车头朝向
+  if (recovery && (!small_gyro_mode_ || std::abs(fixed_wz_) > 1e-6))
+  {
+      throw std::invalid_argument("Recovery MPC 需要固定零角速度模式");
+  }
+
+  // 使用 Recovery 的参考速度和加速度
+  candidate.setPath(
+      points,
+      recovery ? recovery_speed : reference_speed_,
+      recovery ? recovery_acceleration : reference_acceleration_,
+      reference_yaw_rate_,
+      !small_gyro_mode_);
+
+  // 复制正常 MPC 的约束
+  MPCConfig active_config = config_;
+
+  if (recovery)
+  {
+      // 保守限制 X、Y 两轴，确保平移合速度不超过 recovery_speed
+      double v = recovery_speed / std::sqrt(2.0);
+      double a = recovery_acceleration / std::sqrt(2.0);
+
+      active_config.vx_max = std::min(active_config.vx_max, v);
+      active_config.vx_min = std::max(active_config.vx_min, -v);
+
+      active_config.vy_max = std::min(active_config.vy_max, v);
+      active_config.vy_min = std::max(active_config.vy_min, -v);
+
+      active_config.use_acc_constraints = true;
+
+      active_config.ax_max = std::min(active_config.ax_max, a);
+      active_config.ax_min = std::max(active_config.ax_min, -a);
+
+      active_config.ay_max = std::min(active_config.ay_max, a);
+      active_config.ay_min = std::max(active_config.ay_min, -a);
+  }
+
+  // 更新求解器限制
+  solver_->setConfig(active_config);
+
+  recovery_mode_ = recovery;
+  recovery_acceleration_ = recovery ? recovery_acceleration : 0.0;
+
   trajectory_ = std::move(candidate);
   plan_frame_ = path.header.frame_id;
 }
 
+void MincoMpcController::setRecoveryContacts(const RecoveryContacts & contacts)
+{
+  if (!recovery_mode_ || !contacts.ready || recovery_contacts_.ready) {
+    throw std::logic_error("Recovery 初始接触状态无效或重复初始化");
+  }
+  recovery_contacts_ = contacts;
+}
+
 void MincoMpcController::checkPrediction(
   const std::vector<State> & prediction, const std::string & stage,
-  const map_server::MapView & snapshot, const map_server::Footprint & footprint) const
+  const TrajectorySafety & field) const
 {
-  const CostmapCost field(snapshot, footprint, collision_margin_,
-    config_.obstacle_trust_region);
-  for (size_t i = 0; i < prediction.size(); ++i) {
-    try {
-      field.checkMotion(prediction[i ? i - 1 : 0], prediction[i],
-        stage + "，检查路段=" + std::to_string(i));
-    } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
-  }
+  RecoveryTimer timer(RecoveryMetric::PREDICTION);
+  if (prediction.empty()) {throw ControllerInfeasible("MPC 预测轨迹为空");}
+  try {
+    for (size_t i = 0; i < prediction.size(); ++i) {
+      const auto & previous = prediction[i ? i - 1 : 0];
+      if (recovery_mode_) {
+        if (!field.checkEscapeMotion(previous, prediction[i], &recovery_contacts_.cells)) {
+          throw std::runtime_error(stage + "：Recovery 接触恶化或产生新接触");
+        }
+      } else {
+        field.checkMotion(previous, prediction[i], stage);
+      }
+    }
+  } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
 }
 
 geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & measured_speed)
 {
+  RecoveryTimer mpc_timer(RecoveryMetric::MPC);
+  recoveryStage("mpc_setup");
   const auto node = node_.lock();
   if (!node || !solver_ || trajectory_.empty()) {throw std::logic_error("局部控制器尚未就绪，或没有可执行路径");}
   if (pose.header.frame_id != costmap_->getGlobalFrameID() || !finitePose(pose.pose) ||
@@ -201,7 +308,7 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   for (auto * value : {&current.vx, &current.vy, &current.omega}) {
     // Suppress stationary odometry noise, but keep legitimate low-speed motion
     // once commanded. Otherwise a=1.5, dt=0.02 stalls at the 0.03 noise threshold.
-    if (std::abs(*value) < velocity_noise_threshold_ &&
+    if (!recovery_mode_ && std::abs(*value) < velocity_noise_threshold_ &&
       std::abs(last_command[axis]) < deadzone_) {*value = 0.0;}
     ++axis;
   }
@@ -258,10 +365,19 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   }
   const auto & snapshot = *captured;
   const CostmapCost field(snapshot, footprint, collision_margin_, config_.obstacle_trust_region);
-  field.checkPose(observed, "当前实际车体轮廓");
+
+  if (recovery_mode_) {
+    // 初始集合来自执行器停稳时的快照；求解期间绝不重新收集或扩大。
+    recovery_contacts_.update(snapshot, field, observed);
+  }
+  const auto * escape_contacts = recovery_mode_ ? &recovery_contacts_.cells : nullptr;
+  if (!recovery_mode_ || recovery_contacts_.count == 0) {
+    field.checkPose(observed, "当前实际车体轮廓");
+  }
   // This segment is fixed by measured velocity and cannot be repaired by U.
   try {
-    checkPrediction({observed, current}, "延迟期间按当前实测速度预测", snapshot, footprint);
+    recoveryStage("delay_safety");
+    checkPrediction({observed, current}, "延迟期间按当前实测速度预测", field);
   } catch (const std::exception & trigger) {
     // 诊断与停车检查统一使用同一快照、同一 Footprint 和同一安全余量。
     try {
@@ -289,21 +405,39 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     }
     throw;
   }
+
   const auto sample_cost = [&field](const Eigen::Vector2d & p, CostLinearization & cost) {
       return field.sample(p, cost);
     };
-  const auto sample_envelope = [&](const State & measured, const Control & command, auto & planes) {
-      return field.sampleEnvelope(measured, command, control_delay_, config_.control_period,
-        config_.dt, planes);
-    };
-  const auto sample_motion = [&](const State & a, const State & b, auto & planes) {
-      return field.sampleMotion(a, b, config_.dt, planes);
-    };
+
+  const auto sample_envelope = [&](const State & measured, const Control & command, auto & planes)
+  {
+      return field.sampleEnvelope(
+          measured,
+          command,
+          control_delay_,
+          config_.control_period,
+          config_.dt,
+          planes,
+          escape_contacts);
+  };
+
+  const auto sample_motion = [&](const State & a, const State & b, auto & planes)
+  {
+      return field.sampleMotion(
+          a,
+          b,
+          config_.dt,
+          planes,
+          escape_contacts);
+  };
+
   CommandModel command_model;
   command_model.phase = current.omega * output_delay_;
-  command_model.deadzone = deadzone_;
+  command_model.deadzone = recovery_mode_ ? 0.0 : deadzone_; // Recovery 时禁用死区，避免低初速度被清零。
   command_model.fixed_angular_velocity = small_gyro_mode_;
   command_model.fixed_wz = fixed_wz_;
+  recoveryStage("solver");
   if (!solver_->solve(current, reference, control, &prediction, sample_cost, &observed,
     sample_envelope, command_model, sample_motion))
   {
@@ -311,18 +445,62 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
       "（状态码=" + std::to_string(solver_->lastStatus()) + "）");
   }
   // QP 已输出最终全局速度；不再在求解后做相位旋转、限幅或死区截断。
-  prediction.insert(prediction.begin(), observed);
-  checkPrediction(prediction, "预测轨迹检查", snapshot, footprint);
+  recoveryStage("prediction_safety");
+  {
+    RecoveryTimer prediction_timer(RecoveryMetric::PREDICTED_PATH);
+    prediction.insert(prediction.begin(), observed);
+    checkPrediction(prediction, "预测轨迹检查", field);
+  }
   State next = current;
   next.x += control.vx * config_.dt;
   next.y += control.vy * config_.dt;
   next.yaw += control.omega * config_.dt;
-  checkPrediction({current, next}, "最终输出指令检查", snapshot, footprint);
-  // 同时覆盖平移和转动，以及 [0, delay] 内所有执行延迟，不再使用外接圆。
-  try {
-    field.checkEnvelope(observed, control, control_delay_, config_.control_period,
-      "指令保持期间的轮廓安全检查");
-  } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
+  {
+    RecoveryTimer final_timer(RecoveryMetric::FINAL);
+    recoveryStage("final_safety");
+    checkPrediction({current, next}, "最终输出指令检查", field);
+    // 同时覆盖平移和转动，以及 [0, delay] 内所有执行延迟，不再使用外接圆。
+    try {
+      if (recovery_mode_) {
+        if (std::abs(control.omega) > 1e-6) {
+          throw std::runtime_error("Recovery MPC 不允许主动旋转");
+        }
+        field.checkEscapeEnvelope(observed, control, control_delay_,
+          config_.control_period, recovery_contacts_.cells);
+        const double braking = std::min({recovery_acceleration_ / std::sqrt(2.0),
+          config_.ax_max, -config_.ax_min, config_.ay_max, -config_.ay_min});
+        const double alpha = std::min(config_.alpha_max, -config_.alpha_min);
+        // 撤销当前指令时仍存在输入延迟和一个控制周期，不能按瞬时停车检查。
+        field.checkBrakingMotion(observed, control_delay_ + config_.control_period,
+          braking, alpha, recovery_contacts_.cells);
+        // 对所有可能的执行延迟，验证指令保持后再等待停车生效的制动轨迹。
+        const double extent = map_server::calculateMinAndMaxDistances(footprint).second;
+        const double travel = control_delay_ * (std::hypot(observed.vx, observed.vy) +
+          std::hypot(control.vx, control.vy) + extent *
+          (std::abs(observed.omega) + std::abs(control.omega)));
+        const double samples = std::ceil(travel / std::min(0.025, snapshot.geometry().resolution * 0.5));
+        if (!std::isfinite(samples) || samples > 10000) {
+          throw std::runtime_error("Recovery 输出制动分支超出预算");
+        }
+        const int steps = std::max(1, static_cast<int>(samples));
+        for (int i = 0; i <= steps; ++i) {
+          const double delay = control_delay_ * i / steps;
+          State held = observed;
+          held.x += observed.vx * delay + control.vx * (control_delay_ + config_.control_period - delay);
+          held.y += observed.vy * delay + control.vy * (control_delay_ + config_.control_period - delay);
+          held.yaw += observed.omega * delay + control.omega * (control_delay_ + config_.control_period - delay);
+          held.vx = control.vx;
+          held.vy = control.vy;
+          held.omega = control.omega;
+          field.checkBrakingMotion(held, control_delay_ + config_.control_period,
+            braking, alpha, recovery_contacts_.cells);
+        }
+      } else {
+        field.checkEnvelope(observed, control, control_delay_, config_.control_period,
+          "指令保持期间的轮廓安全检查");
+      }
+    } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
+  }
   // 本周期只使用冻结快照完成碰撞检查；正常换图留给下一周期，不撤销成功求解。
   // 发布前仍要求最新地图健康、消息有效且生产者未重启。
   if (!costmap_->isCurrent() ||

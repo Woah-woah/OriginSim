@@ -17,15 +17,21 @@ target_include_directories(minco_qpoases SYSTEM PUBLIC third_party/qpOASES/inclu
 target_compile_definitions(minco_qpoases PRIVATE __NO_COPYRIGHT__ LINUX)
 
 add_library(minco_mpc_solver SHARED src/mpc_solver.cpp src/path_trajectory.cpp)
+
 target_compile_features(minco_mpc_solver PUBLIC cxx_std_17)
+
 target_include_directories(minco_mpc_solver PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
+
 target_link_libraries(minco_mpc_solver PUBLIC Eigen3::Eigen PRIVATE minco_qpoases)
 
 add_library(minco_controller SHARED src/minco_mpc_controller.cpp)
+
 target_link_libraries(minco_controller minco_mpc_solver)
+
 ament_target_dependencies(minco_controller ${dependencies})
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(minco_qpoases PRIVATE -O2)
   target_compile_options(minco_mpc_solver PRIVATE -O2 -Wall -Wextra -Wpedantic)
@@ -43,4 +49,17 @@ install(FILES third_party/qpOASES/LICENSE third_party/qpOASES/LICENSE.txt
 ament_export_targets(minco_controller_targets HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
 ament_export_dependencies(Eigen3 ${dependencies})
+# 本次性能优化保留前后等价性回归，参考实现不进入导航库。
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(test_trajectory_safety_equivalence test/test_trajectory_safety_equivalence.cpp)
+  target_compile_features(test_trajectory_safety_equivalence PRIVATE cxx_std_17)
+  target_link_libraries(test_trajectory_safety_equivalence minco_mpc_solver)
+  ament_target_dependencies(test_trajectory_safety_equivalence map_server)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_trajectory_safety_equivalence PRIVATE -O2)
+  endif()
+  add_test(NAME trajectory_safety_equivalence COMMAND test_trajectory_safety_equivalence)
+endif()
+
 ament_package()

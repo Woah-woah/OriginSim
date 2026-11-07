@@ -58,7 +58,7 @@ Point point(double x, double y)
   result.y = y;
   return result;
 }
-} // 匿名命名空间
+} // namespace
 
 ConnectorExecutor::ConnectorExecutor(
   ConnectorConfig config, std::string frame, std::vector<Point> footprint, Command command, Log log)

@@ -1,4 +1,5 @@
 #include "nav_executor/path_planner.hpp"
+#include "topology_global_planner/grid/grid_planner.hpp"
 
 #include <exception>
 #include <utility>
@@ -74,6 +75,9 @@ void PathPlanner::run()
         result.plan = plan_(*request, cancel);
         result.original_path = original_path_();
       }
+    } catch (const topology_global_planner::grid::StartBlocked & exception) {
+      result.error = exception.what();
+      result.blocked_start = exception.start;
     } catch (const std::exception & exception) {
       result.error = exception.what();
     } catch (...) {

@@ -187,7 +187,15 @@ bool TaskManager::accept(PlanningResult result, Clock::time_point now)
     retry_at_ = now + retry_delay_;
     // 已脱困但仍规划不通，交回同一轮 Recovery；不能绕过 max_attempts 无限规划。
     ++planning_failures_;
-    state_ = recovery_attempts_ > 0 ? TaskState::RECOVERY_PENDING :
+    // 首次规划也可能因起点碰撞失败，此时尚无可复用的历史导航路径。
+    // 单点参考只让 RecoveryPlanner 缺省反向提示，实际运动仍由脱困搜索生成。
+    const bool initial_collision = result.recovery_start &&
+      !result.recovery_start->header.frame_id.empty();
+    if (initial_collision && recovery_route_.poses.empty()) {
+      recovery_route_.header = result.recovery_start->header;
+      recovery_route_.poses.push_back(*result.recovery_start);
+    }
+    state_ = recovery_attempts_ > 0 || initial_collision ? TaskState::RECOVERY_PENDING :
       (planning_failures_ >= max_planning_failures_ ? TaskState::TERMINAL_FAILED : TaskState::FAILED);
   } else {
     plan_ = std::move(result.plan);

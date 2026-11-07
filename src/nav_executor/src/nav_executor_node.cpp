@@ -10,6 +10,8 @@
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "nav_executor/path_planner.hpp"
+#include "minco_controller/trajectory_safety.hpp"
+#include "tf2/utils.h"
 #include "minimum_jerk_smoother/smoother.hpp"
 #include "nav_executor/connector_executor.hpp"
 #include "referee_msg/msg/referee.hpp"
@@ -490,7 +492,7 @@ public:
           response->success = true;
           response->message = "Emergency stop cleared; task cancelled, submit a new goal";
         });
-    tick_ = create_wall_timer(std::chrono::duration<double>(1.0 / tick_frequency), [this]() {
+    tick_ = create_wall_timer(std::chrono::duration<double>(1.0 / tick_frequency), [this, local_costmap]() {
       const auto now = TaskManager::Clock::now();
       if (emergency_stop_requested_.exchange(false)) {
         cancelForEmergency();
@@ -509,6 +511,41 @@ public:
           {
             result->plan.full_path.poses.clear();
             result->error = "Rejected plan: latest costmap is stale or path footprint is blocked";
+          }
+        }
+        // 起点净空不足也可能没有实际轮廓接触；用明确错误类型和位置确认，不匹配日志字符串。
+        if (current_result && (!result->error.empty() || result->plan.full_path.poses.empty()) &&
+          get_parameter("recovery.enabled").as_bool())
+        {
+          try {
+            const auto grid = local_costmap->view();
+            geometry_msgs::msg::PoseStamped start;
+            if (local_costmap->isCurrent(*grid) && local_costmap->getRobotPose(start)) {
+              const auto footprint = local_costmap->footprintInBaseFrame(start.header.stamp);
+              const minco_controller::TrajectorySafety safety(*grid, footprint,
+                get_parameter("MPC.collision_margin").as_double());
+              minco_controller::State observed;
+              observed.x = start.pose.position.x;
+              observed.y = start.pose.position.y;
+              observed.yaw = tf2::getYaw(start.pose.orientation);
+              const int contacts = safety.collisionCellCount(observed);
+              const bool start_blocked = result->blocked_start &&
+                result->blocked_start->header.frame_id == start.header.frame_id &&
+                std::hypot(result->blocked_start->pose.position.x - observed.x,
+                  result->blocked_start->pose.position.y - observed.y) <= grid->geometry().resolution;
+              if (contacts >= 0 && (contacts > 0 || start_blocked)) {
+                result->recovery_start = start;
+                RCLCPP_WARN(get_logger(),
+                  "规划起点受阻，启动 Recovery 停车确认：全局起点净空不足=%s，实际轮廓接触栅格=%d",
+                  start_blocked ? "是" : "否", contacts);
+              } else {
+                RCLCPP_WARN(get_logger(),
+                  "规划失败未触发 Recovery：实际接触=%d，起点阻塞位置匹配=%s",
+                  contacts, start_blocked ? "是" : "否");
+              }
+            }
+          } catch (const std::exception & error) {
+            RCLCPP_WARN(get_logger(), "无法确认起点碰撞，保持规划失败处理：%s", error.what());
           }
         }
         if (tasks_.accept(std::move(*result), now)) {
@@ -536,9 +573,9 @@ public:
       }
       // 静态地图常早于定位就绪；尚无机器人 TF 时保留目标等待，不消耗规划重试。
       const bool planning_ready = ready_.load() && pose_available && costmap_->isCurrent();
-      // 脱困后的原目标仍规划不通，输入就绪后继续下一次 Escape。
+      // 起点碰撞或脱困后原目标仍规划不通，输入就绪后进入 Escape。
       if (tasks_.state() == TaskState::RECOVERY_PENDING && planning_ready) {
-        RCLCPP_WARN(get_logger(), "脱困后仍无法规划原目标，继续 Recovery：%s", tasks_.error().c_str());
+        RCLCPP_WARN(get_logger(), "规划受阻，尝试 Recovery：%s", tasks_.error().c_str());
         requestRecovery(tasks_.identity());
       }
       const auto state_before_request = tasks_.state();

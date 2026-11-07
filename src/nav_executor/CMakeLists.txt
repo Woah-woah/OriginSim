@@ -47,7 +47,8 @@ target_link_libraries(nav_executor_node yaml-cpp)
 ament_target_dependencies(nav_executor_node ${dependencies} ament_index_cpp referee_msg)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(${PROJECT_NAME}_core PRIVATE -O2 -Wall -Wextra -Wpedantic)
-  target_compile_options(nav_executor_node PRIVATE -Wall -Wextra -Wpedantic)
+  # 主程序也实例化头文件中的几何内核，避免未优化的弱符号覆盖共享库中的实现。
+  target_compile_options(nav_executor_node PRIVATE -O2 -Wall -Wextra -Wpedantic)
 endif()
 
 install(TARGETS ${PROJECT_NAME}_core nav_executor_node

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -235,6 +236,7 @@ public:
       RCLCPP_INFO(logger_, "路径执行已停止，原因：%s", reason.c_str());
     }
     recovery_phase_ = RecoveryPhase::NONE;
+    recovery_contacts_ = {};
     map_update_since_.reset();
     path_.reset();
     completion_wait_since_.reset();
@@ -245,6 +247,7 @@ public:
 
   void fail(const std::string & reason, ExecutionFailure kind = ExecutionFailure::SAFETY_OR_INPUT)
   {
+    if (minco_controller::active_recovery_profile) {minco_controller::active_recovery_profile->failed = true;}
     if (recovery_phase_ != RecoveryPhase::NONE) {completeRecovery(false, reason); return;}
     const bool had_path = path_.has_value();
     path_.reset();
@@ -363,6 +366,10 @@ public:
     }
     const rclcpp::Time time(shared_time, clock_->get_clock_type());
     *observation = time;
+    if (auto * profile = minco_controller::active_recovery_profile) {
+      profile->pose_stamp = time.seconds();
+      profile->aligned_age = (clock_->now() - time).seconds();
+    }
     checkStamp(*observation, odom_timeout_, "共同观测时间的里程计");
     std::optional<geometry_msgs::msg::Twist> sampled;
     {
@@ -423,10 +430,10 @@ public:
     recovery_observation_ns_ = 0;
     recovery_observed_speed_ = 0;
     recovery_attempt_distance_ = 0;
-    recovery_braking_ = false;
     recovery_overspeed_since_.reset();
+    recovery_contacts_ = {};
     recovery_plan_ = {};
-    recovery_command_.setZero();
+    recovery_command_speed_ = 0.0;
     state_ = ExecutionState::RECOVERING;
     RCLCPP_INFO(logger_, "Recovery 地图模式：%s",
       costmap_->get_parameter("require_cloud").as_bool() ?
@@ -438,6 +445,7 @@ public:
   {
     publishZero();
     recovery_phase_ = RecoveryPhase::NONE;
+    recovery_contacts_ = {};
     path_.reset();
     controller_.reset();
     state_ = success ? ExecutionState::STOPPED : ExecutionState::FAILED;
@@ -477,16 +485,26 @@ public:
     recovery_path_pub_->publish(recoveryPath(recovery_plan_.selected, header));
   }
 
-  void tickRecovery(const geometry_msgs::msg::PoseStamped & pose,
+
+  void tickRecovery(
+    const geometry_msgs::msg::PoseStamped & pose,
     const geometry_msgs::msg::Twist & speed,
     const builtin_interfaces::msg::Time & observation_stamp)
   {
+    minco_controller::RecoveryTimer recovery_timer(minco_controller::RecoveryMetric::RECOVERY);
+    minco_controller::recoveryStage("executor_checks");
+    if (auto * profile = minco_controller::active_recovery_profile) {
+      profile->entry_age = (clock_->now() - rclcpp::Time(pose.header.stamp,
+        clock_->get_clock_type())).seconds();
+    }
     using State = minco_controller::State;
     const auto began = TaskManager::Clock::now();
     const auto & c = recovery_config_;
+
     if (std::chrono::duration<double>(began - recovery_started_).count() > c.timeout) {
       throw std::runtime_error("Recovery 总超时");
     }
+
     const auto captured = costmap_->view();
     if (!costmap_->isCurrent(*captured)) {
       if (costmap_->isUpdating()) {throw minco_controller::MapChanged("Recovery 等待地图版本配对");}
@@ -506,8 +524,7 @@ public:
     observed.omega = speed.angular.z;
     const Eigen::Vector2d position(observed.x, observed.y);
     const double measured = std::hypot(observed.vx, observed.vy);
-    if (recovery_previous_ &&
-      (position - *recovery_previous_).norm() > c.speed * control_timeout_ + c.tracking_tolerance)
+    if (recovery_previous_ && (position - *recovery_previous_).norm() > c.speed * control_timeout_ + c.tracking_tolerance)
     {
       throw std::runtime_error("Recovery 定位跳变");
     }
@@ -549,12 +566,23 @@ public:
           measured, std::abs(observed.omega));
         return;
       }
-      safety.checkPose(observed, "Recovery 停稳后轮廓");
-      if (recovery_phase_ == RecoveryPhase::FINISHING) {
-        recovery_endpoints_.push_back(position);
-        completeRecovery(true, "脱困后已停稳，请求保留目标的全局重规划");
-        return;
+
+      // FINISHING 阶段仍然需要严格检查
+      if (recovery_phase_ == RecoveryPhase::FINISHING)
+      {
+          safety.checkPose(observed, "Recovery 停稳后轮廓");
+
+          recovery_endpoints_.push_back(position);
+          completeRecovery(true, "脱困后已停稳，请求保留目标的全局重规划");
+          return;
       }
+
+      // 停稳时冻结初始集合；失败或越界时禁止启动运动。
+      recovery_contacts_.initialize(*captured, safety, observed);
+      if (recovery_contacts_.count > 0) {
+        RCLCPP_WARN(logger_, "Recovery 从初始重叠启动，冻结接触栅格数量=%d", recovery_contacts_.count);
+      }
+
       // 在控制坐标系中冻结真实车体轮廓；路径反向独立于车头方向。
       Eigen::Vector2d reverse = Eigen::Vector2d::Zero();
       double nearest = INFINITY;
@@ -574,39 +602,45 @@ public:
       auto search_config = c;
       search_config.max_distance = std::min(c.max_distance - recovery_attempt_distance_, c.total_distance - recovery_distance_);
       if (search_config.max_distance < 0.1) {throw std::runtime_error("Recovery 剩余距离预算不足");}
-      recovery_plan_ = RecoveryPlanner(search_config).plan(*captured, footprint, observed, reverse,
-        recovery_endpoints_);
+
+      recovery_plan_ = RecoveryPlanner(search_config).plan(*captured, footprint, observed, reverse, recovery_endpoints_);
+      // 将 Recovery 搜索结果转换为 MPC 可以执行的路径
+      auto mpc_path = recoveryPath(recovery_plan_.selected, pose.header);
+      visualizeRecovery(pose.header);
+      controller_.setPlan(mpc_path, c.speed, c.acceleration);
+      controller_.setRecoveryContacts(recovery_contacts_);
+
       recovery_previous_ = position;
       recovery_progress_anchor_ = position;
       recovery_progress_at_ = began;
       recovery_phase_started_ = began;
       recovery_phase_ = RecoveryPhase::MOVING;
-      recovery_command_.setZero();
-      visualizeRecovery(pose.header);
+      recovery_command_speed_ = 0.0;
       RCLCPP_INFO(logger_, "Recovery 选择轨迹：地图=%llu，候选=%zu，评分=%.3f，最小轮廓净空=%.3f米，"
-        "长度=%.3f米，匀速段速度=%.3f米/秒（单方向平移）", static_cast<unsigned long long>(captured->version()),
+        "长度=%.3f米，MPC 速度上限=%.3f米/秒（单方向平移）", static_cast<unsigned long long>(captured->version()),
         recovery_plan_.candidates.size(), recovery_plan_.selected.score,
         recovery_plan_.selected.clearance, recovery_plan_.selected.length, c.speed);
       return;
     }
+
     if (captured->status().producer_id != recovery_plan_.producer) {
       throw std::runtime_error("Recovery 地图生产端重启");
     }
-    safety.checkPose(observed, "Recovery 实时轮廓");
-    // 发出任何非零指令前，继续严格检查实测惯性、延迟及制动扫掠。
-    State inertia = observed;
-    const double brake_time = c.delay + 1.0 / frequency_ + measured / (2 * c.braking);
-    inertia.x += observed.vx * brake_time;
-    inertia.y += observed.vy * brake_time;
-    inertia.yaw += observed.omega * (c.delay + 1.0 / frequency_ +
-      std::abs(observed.omega) / recovery_alpha_);
-    safety.checkMotion(observed, inertia, "Recovery 延迟及惯性制动扫掠");
+    recovery_contacts_.update(*captured, safety, observed);
+    const auto check_motion = [&](const State & a, const State & b, const std::string & stage) {
+        if (!safety.checkEscapeMotion(a, b, &recovery_contacts_.cells)) {
+          throw std::runtime_error(stage + "：接触恶化或产生新接触");
+        }
+      };
+    // 空集合自动走严格检测；初始重叠也必须验证惯性停车全过程。
+    safety.checkBrakingMotion(observed, c.delay + 1.0 / frequency_,
+      c.braking / std::sqrt(2.0), recovery_alpha_, recovery_contacts_.cells);
     // 实测超出低速跟踪阈值时立即撤销指令；允许停稳后复检继续，不放宽速度阈值。
-    // 保留原方向、制动状态、总超时和距离预算，不能借停车重置脱困上限。
+    // 保留原方向、总超时和距离预算，不能借停车重置脱困上限。
     if (measured > c.speed + c.velocity_tolerance || recovery_overspeed_since_) {
       publishZero();
-      const double previous_command = recovery_command_.norm();
-      recovery_command_.setZero();
+      const double previous_command = recovery_command_speed_;
+      recovery_command_speed_ = 0.0;
       if (!recovery_overspeed_since_) {
         recovery_overspeed_since_ = began;
         recovery_still_since_.reset();
@@ -631,7 +665,7 @@ public:
     auto target = states.back();
     target.yaw = yaw;
     // 固定已选方向，在每份新地图上复检整段剩余轨迹；换图不重新停车选方向。
-    safety.checkMotion(observed, target, "Recovery 剩余轨迹实时复检");
+    check_motion(observed, target, "Recovery 剩余轨迹实时复检");
     recovery_plan_.version = captured->version();
     recovery_plan_.dynamic_version = captured->status().dynamic_version;
     const Eigen::Vector2d error(target.x - observed.x, target.y - observed.y);
@@ -649,50 +683,49 @@ public:
     } else if (std::chrono::duration<double>(began - recovery_progress_at_).count() > c.progress_timeout) {
       throw std::runtime_error("Recovery 执行无进展");
     }
-    if (recovery_braking_ && stopped && recovery_command_.norm() < 1e-9) {
-      publishZero();
-      recovery_command_.setZero();
-      recovery_still_since_.reset();
-      recovery_phase_ = RecoveryPhase::FINISHING;
-      recovery_phase_started_ = began;
-      return;
+
+    // 进入位置容差后先停车，FINISHING 再确认停稳和严格净空。
+    if (error.norm() <= c.waypoint_tolerance)
+    {
+        publishZero();
+
+        recovery_command_speed_ = 0.0;
+        recovery_still_since_.reset();
+
+        recovery_phase_ = RecoveryPhase::FINISHING;
+        recovery_phase_started_ = began;
+
+        return;
     }
+
     recovery_still_since_.reset();
-    // 匀速段直接使用 YAML 速度和冻结的平移方向，不用位置误差调速或反向纠偏。
-    // 只在起步、终点制动时限加速度；制动一旦开始就不再加速，停稳后交回全局导航。
-    const double dt = 1.0 / frequency_;
-    const Eigen::Vector2d direction = segment.normalized();
-    const double remaining = error.dot(direction);
-    const double braking_speed = std::max(measured, recovery_command_.norm());
-    const double stopping_distance = braking_speed * (c.delay + dt) +
-      braking_speed * braking_speed / (2 * c.braking) + c.waypoint_tolerance * 0.5;
-    if (!recovery_braking_ && remaining <= stopping_distance) {
-      recovery_braking_ = true;
-      RCLCPP_INFO(logger_, "Recovery 到达制动区：剩余=%.3f米，开始停车并恢复原目标导航", remaining);
+
+    // 交给 MPC 计算速度
+    if (zero_command_published_) {controller_.notifyZeroCommandPublished();}
+    auto output = controller_.computeVelocityCommands(pose, speed).twist;
+
+    // 检查 MPC 输出
+    double output_speed = std::hypot(output.linear.x, output.linear.y);
+
+    if (!finiteTwist(output) ||
+        output_speed > c.speed + 1e-3 ||
+        std::abs(output.angular.z) > 1e-3)
+    {
+        throw std::runtime_error("Recovery MPC 输出速度无效或超限");
     }
-    const Eigen::Vector2d desired = recovery_braking_ ? Eigen::Vector2d::Zero().eval() :
-      (direction * c.speed).eval();
-    Eigen::Vector2d delta = desired - recovery_command_;
-    const double acceleration = recovery_braking_ ? c.braking : c.acceleration;
-    if (delta.norm() > acceleration * dt) {delta *= acceleration * dt / delta.norm();}
-    const Eigen::Vector2d command = recovery_command_ + delta;
-    // 指令的加速度由上面的增量限制保证；速度跟踪误差不等于实测加速度。
-    // 舵轮对齐、控制延迟或暂时未动交给进展检测；实际惯性仍由扫掠包络覆盖。
-    if (!command.allFinite() || command.norm() > c.speed + 1e-9) {
-      throw std::runtime_error("Recovery 指令无效或速度超限");
+
+    // MPC 已验证最终输出的延迟包络和制动过程，执行器直接发布车体坐标系速度。
+    minco_controller::recoveryStage("publish_inputs");
+    if (auto * profile = minco_controller::active_recovery_profile) {
+      profile->publish_check = true;
+      profile->publish_age = (clock_->now() - rclcpp::Time(pose.header.stamp,
+        clock_->get_clock_type())).seconds();
     }
-    const minco_controller::Control control{command.x(), command.y(), 0};
-    safety.checkEnvelope(observed, control, c.delay, dt, "Recovery 最终指令延迟包络");
-    auto brake_start = observed;
-    brake_start.x += observed.vx * c.delay;
-    brake_start.y += observed.vy * c.delay;
-    brake_start.yaw += observed.omega * c.delay;
-    auto brake_end = brake_start;
-    const double braking_horizon = c.delay + dt + command.norm() / (2 * c.braking);
-    brake_end.x += command.x() * braking_horizon;
-    brake_end.y += command.y() * braking_horizon;
-    safety.checkMotion(brake_start, brake_end, "Recovery 最终指令制动扫掠");
     readSpeed("Recovery 发布前");
+    if (auto * profile = minco_controller::active_recovery_profile) {
+      profile->publish_age = (clock_->now() - rclcpp::Time(pose.header.stamp,
+        clock_->get_clock_type())).seconds();
+    }
     checkStamp(pose.header.stamp, tf_timeout_, "Recovery TF");
     const auto latest = costmap_->view();
     if (costmap_->isUpdating()) {throw minco_controller::MapChanged("Recovery 等待地图版本配对");}
@@ -704,11 +737,11 @@ public:
       latest->status().producer_id != captured->status().producer_id ||
       std::chrono::duration<double>(TaskManager::Clock::now() - began).count() > control_timeout_)
     {throw std::runtime_error("Recovery 输入失效、地图生产端重启或控制超时");}
-    geometry_msgs::msg::Twist output;
-    output.linear.x = std::cos(yaw) * command.x() + std::sin(yaw) * command.y();
-    output.linear.y = -std::sin(yaw) * command.x() + std::cos(yaw) * command.y();
-    recovery_command_ = command;
+
+    recovery_command_speed_ = output_speed;
     publishCommand(output);
+    if (auto * profile = minco_controller::active_recovery_profile) {profile->published = true;}
+    minco_controller::recoveryStage("published");
   }
 
   void tick()
@@ -729,21 +762,100 @@ public:
       stop("当前执行路径已被任务管理器撤销");
       return;
     }
+    // 周期诊断包含输入查询，正常导航不启用；计时在异常处理之后仍可报告。
+    minco_controller::RecoveryProfileSession profile_session(
+      recovery_phase_ != RecoveryPhase::NONE,
+      [this](const minco_controller::RecoveryProfile & profile, bool unwinding) {
+        using Metric = minco_controller::RecoveryMetric;
+        const auto now = TaskManager::Clock::now();
+        const bool failed = profile.failed || unwinding;
+        // 按真实时间节流，仿真暂停时也不会高频打印；失败周期保留完整诊断。
+        if (!failed && now - recovery_profile_logged_ < std::chrono::seconds(1)) {return;}
+        recovery_profile_logged_ = now;
+        const double ros_end = clock_->now().seconds();
+        std::ostringstream line;
+        line.setf(std::ios::fixed);
+        line.precision(3);
+        line << "[RecoveryPerf] phase=" << profile.phase << " stage=" << profile.stage << " failed=" << failed
+             << " published=" << profile.published
+             << " tf_timeout_s=" << tf_timeout_
+             << " control_timeout_ms=" << control_timeout_ * 1000
+             << " exceeded=" << (profile.get(Metric::RECOVERY).ms > control_timeout_ * 1000)
+             << " tick_exceeded=" << (profile.get(Metric::TICK).ms > control_timeout_ * 1000)
+             << " tf_input_age_s=" << profile.input_age << " tf_aligned_age_s=" << profile.aligned_age
+             << " tf_entry_age_s=" << profile.entry_age
+             << " tf_publish_age_s=" << profile.publish_age
+             << " publish_check=" << profile.publish_check
+             << " tf_end_age_s=" << ros_end - profile.pose_stamp
+             << " ros_delta_s=" << ros_end - profile.ros_begin;
+        const std::pair<const char *, Metric> metrics[] = {
+          {"tick", Metric::TICK}, {"input", Metric::INPUT}, {"recovery", Metric::RECOVERY},
+          {"mpc", Metric::MPC}, {"solve", Metric::SOLVE}, {"qp", Metric::QP},
+          {"checkPrediction", Metric::PREDICTION}, {"prediction_path", Metric::PREDICTED_PATH},
+          {"final", Metric::FINAL},
+          {"collisionCellCount", Metric::COLLISION}, {"checkEscapeMotion", Metric::ESCAPE},
+          {"sampleMotion", Metric::SAMPLE_MOTION}, {"sampleEnvelope", Metric::SAMPLE_ENVELOPE},
+          {"braking", Metric::BRAKING}, {"checkMotion", Metric::MOTION},
+          {"square", Metric::SQUARE}, {"hull", Metric::HULL},
+          {"projection", Metric::PROJECTION}, {"appendPlane", Metric::APPEND},
+          {"visitObstacles", Metric::VISIT}};
+        for (const auto & metric : metrics) {
+          const auto & timing = profile.get(metric.second);
+          line << " " << metric.first << "=" << timing.calls << "/" << timing.ms << "ms";
+        }
+        line << " sample_obstacles=" << profile.sample_obstacles
+             << " sample_obstacles_max=" << profile.sample_obstacles_max
+             << " sample_planes=" << profile.sample_planes
+             << " sample_planes_max=" << profile.sample_planes_max
+             << " plane_comparisons=" << profile.plane_comparisons
+             << " plane_duplicates=" << profile.plane_duplicates
+             << " collision_cache_hits=" << profile.collision_cache_hits;
+        RCLCPP_WARN(logger_, "%s", line.str().c_str());
+      });
+    minco_controller::RecoveryTimer tick_timer(minco_controller::RecoveryMetric::TICK);
+    if (auto * profile = minco_controller::active_recovery_profile) {
+      profile->ros_begin = clock_->now().seconds();
+      profile->phase = recovery_phase_ == RecoveryPhase::STOPPING ? "STOPPING" :
+        (recovery_phase_ == RecoveryPhase::MOVING ? "MOVING" : "FINISHING");
+    }
     try {
       if (!global_ready_() || !costmap_->isCurrent()) {
         if (costmap_->isUpdating()) {throw minco_controller::MapChanged("等待地图新版本完成配对");}
         throw std::runtime_error("全局或局部地图不可用，或地图数据已过期");
       }
       geometry_msgs::msg::PoseStamped pose;
-      if (!costmap_->getRobotPose(pose)) {
-        throw std::runtime_error("无法取得机器人当前位置的坐标变换");
+      geometry_msgs::msg::Twist speed;
+      builtin_interfaces::msg::Time observation;
+      {
+        minco_controller::RecoveryTimer input_timer(minco_controller::RecoveryMetric::INPUT);
+        if (!costmap_->getRobotPose(pose)) {
+          // MapClient 会拒绝过期 TF；仅在失败时读取原始时间戳用于诊断，不用于控制。
+          if (auto * profile = minco_controller::active_recovery_profile) {
+            try {
+              const auto tf = costmap_->getTfBuffer()->lookupTransform(
+                costmap_->getGlobalFrameID(), costmap_->getBaseFrameID(), tf2::TimePointZero);
+              profile->pose_stamp = rclcpp::Time(tf.header.stamp, clock_->get_clock_type()).seconds();
+              profile->input_age = clock_->now().seconds() - profile->pose_stamp;
+            } catch (const tf2::TransformException & error) {
+              RCLCPP_DEBUG(logger_, "Recovery 原始 TF 时间诊断不可用：%s", error.what());
+            }
+          }
+          throw std::runtime_error("无法取得机器人当前位置的坐标变换");
+        }
+        if (auto * profile = minco_controller::active_recovery_profile) {
+          profile->pose_stamp = rclcpp::Time(pose.header.stamp, clock_->get_clock_type()).seconds();
+          profile->input_age = clock_->now().seconds() - profile->pose_stamp;
+        }
+        observation = pose.header.stamp;
+        speed = readSpeed("求解前", &observation);
+        if (!costmap_->getRobotPose(pose, observation)) {
+          throw std::runtime_error("无法取得机器人当前位置的坐标变换");
+        }
+        if (auto * profile = minco_controller::active_recovery_profile) {
+          profile->pose_stamp = rclcpp::Time(pose.header.stamp, clock_->get_clock_type()).seconds();
+        }
+        checkStamp(pose.header.stamp, tf_timeout_, "机器人坐标变换", true);
       }
-      auto observation = pose.header.stamp;
-      const auto speed = readSpeed("求解前", &observation);
-      if (!costmap_->getRobotPose(pose, observation)) {
-        throw std::runtime_error("无法取得机器人当前位置的坐标变换");
-      }
-      checkStamp(pose.header.stamp, tf_timeout_, "机器人坐标变换", true);
       if (!finitePose(pose.pose)) {throw std::runtime_error("Recovery/导航位姿无效");}
       if (recovery_phase_ != RecoveryPhase::NONE) {
         tickRecovery(pose, speed, observation);
@@ -834,7 +946,13 @@ public:
     } catch (const minco_controller::MapChanged & exception) {
       if (recovery_phase_ != RecoveryPhase::NONE) {
         publishZero();
-        recovery_command_.setZero();
+        recovery_command_speed_ = 0.0;
+        if (std::chrono::duration<double>(TaskManager::Clock::now() - recovery_started_).count() >
+          recovery_config_.timeout)
+        {
+          completeRecovery(false, "Recovery 等待地图更新期间总超时");
+          return;
+        }
         // 撤销本周期指令，保留阶段和已选直线；下一周期用新图完整复检后恢复。
         // 否则持续地图更新会不断重置停车计时，始终无法进入或完成脱困。
         RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000, "%s", exception.what());
@@ -869,16 +987,18 @@ public:
   RecoveryDone recovery_done_;
   enum class RecoveryPhase { NONE, STOPPING, MOVING, FINISHING };
   RecoveryPhase recovery_phase_{RecoveryPhase::NONE};
+  TaskManager::Clock::time_point recovery_profile_logged_{};
   RecoveryConfig recovery_config_;
   RecoveryPlan recovery_plan_;
-  bool recovery_braking_{false};
+  minco_controller::RecoveryContacts recovery_contacts_;
   double recovery_alpha_{0};
   uint64_t recovery_goal_{0};
   double recovery_distance_{0}, recovery_attempt_distance_{0};
   std::optional<Eigen::Vector2d> recovery_previous_;
   int64_t recovery_observation_ns_{0};
   double recovery_observed_speed_{0};
-  Eigen::Vector2d recovery_command_{0, 0}, recovery_progress_anchor_{0, 0};
+  double recovery_command_speed_{0.0};
+  Eigen::Vector2d recovery_progress_anchor_{0, 0};
   std::vector<Eigen::Vector2d> recovery_endpoints_;
   TaskManager::Clock::time_point recovery_started_, recovery_phase_started_, recovery_progress_at_;
   std::optional<TaskManager::Clock::time_point> recovery_still_since_;

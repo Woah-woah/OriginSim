@@ -96,7 +96,7 @@ mapping_module:
   enable_mapping: false # false 时直接关闭 Scan Context 回调与后台 worker
   keyframe_dist_thresh: 1.0
   keyframe_angle_thresh: 0.8
-  map_save_path: "./map_scantext07093.pcd"
+  map_save_path: "./PCD/rmuc_2026.pcd"
   auto_save_interval: 20.0 # meters
   
   scantext:

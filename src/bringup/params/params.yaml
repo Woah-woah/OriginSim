@@ -4,17 +4,17 @@ map_server:
     global_frame: map
     robot_base_frame: base_link_fake
     footprint_frame: base_link
-    robot_radius: 0.15
+    robot_radius: 0.20
     footprint: ''
     footprint_padding: 0.01
     track_unknown_space: true
-    inflation_radius: 0.55
+    inflation_radius: 1.1
     cost_scaling_factor: 5.0                # 越大则代价衰减越快
     safety_margin: 0.0                      # 额外路径余量由原有规划/平滑配置施加，避免重复
     grid_margin_factor: 0.7071067811865476  # 栅格离散余量系数；乘地图分辨率得到米，当前值为半格对角线
     update_frequency: 10.0                  # Hz，地图后台更新频率；障碍未变化时复用已有 EDT
 
-    dynamic_obstacles_enabled: true
+    dynamic_obstacles_enabled: false
     cloud_topic: /livox/scan          # /cloud_registered
     static_pcd: "rmuc_2025.pcd"
     cloud_timeout: 0.5                # s，点云观测超过此时间视为过期
@@ -52,11 +52,11 @@ map_client:
     global_frame: map                 # 地图与规划使用的固定坐标系
     robot_base_frame: base_link_fake
     footprint_frame: base_link
-    robot_radius: 0.15
+    robot_radius: 0.20
     footprint: ''
     footprint_padding: 0.01
     track_unknown_space: true
-    inflation_radius: 0.55
+    inflation_radius: 1.1
     cost_scaling_factor: 5.0
     require_cloud: false              # 普通导航跟随生产端模式；开启动态障碍时由执行器自动要求点云。
     require_radar: false              # 是否要求雷达来源健康；开启后缺失或过期会阻止地图用于导航
@@ -81,7 +81,7 @@ nav_executor:
     xy_goal_tolerance: 0.3            # m，控制器判定到达目标的位置容差
     yaw_goal_tolerance: 3.14          # rad，控制器判定到达目标的朝向容差；3.14 接近不限制朝向
     stopped_velocity_tolerance: 0.05  # m/s，到点时用于判定平移速度已足够低的阈值
-    max_planning_failures: 3          # 重规划次数，到了触发恢复
+    max_planning_failures: 3          # 重规划次数
     route_monitor:
       enabled: true
       deviation_distance: 0.5     # m，机器人偏离路径超过此距离开始计时
@@ -101,7 +101,7 @@ nav_executor:
       enabled: true            # 全路径联合 Minimum Jerk 平滑，失败安全回退
       timeout: 0.3             # s，受全局规划总超时共同限制
       control_spacing: 0.4     # m，短共线控制点合并间距
-      corridor_range: 1.0      # m，方形安全走廊最大范围
+      corridor_range: 0.7      # m，方形安全走廊最大范围
       max_speed: 2.5           # m/s，仅用于时间分配
       max_acceleration: 2.2    # m/s^2，仅用于时间分配
       collision_iterations: 6  # 平滑后碰撞复检与约束修正的最大迭代次数
@@ -115,8 +115,8 @@ nav_executor:
       exit_debounce: 0.2      # s，持续离开通道区域达到此时间后，才释放占用状态
       pose_timeout: 0.5       # s，位姿缺失或过期时保留原通道状态，不提前释放
     recovery:
-      enabled: false
-      speed: 0.18          # m/s，匀速段固定速度；起停限加速度，单方向平移、不主动转头
+      enabled: true
+      speed: 0.30          # m/s，匀速段固定速度；起停限加速度，单方向平移、不主动转头
       max_distance: 2.5    # m，单次脱困最大实际行驶距离
       timeout: 30.0        # s，包含停车确认、选方向、执行和停稳
       max_attempts: 3      # 连续脱困次数上限；恢复持续行进或到点后清零
@@ -150,7 +150,7 @@ nav_executor:
       reference_speed: 1.2                   # m/s，参考轨迹速度上限；不是直接发布的速度指令
       reference_acceleration: 1.0            # m/s²，参考轨迹时间参数化的加速度上限
       reference_yaw_rate: 1.0                # rad/s，参考轨迹转向速度上限；小陀螺模式角速度由 fixed_wz 指定
-      control_delay_compensation: 0.10       # s，名义执行延迟：先按实测速度预测；硬检查同时覆盖 0～此值的延迟
+      control_delay_compensation: 0.1        # 从当前预测时刻算出速度，实际上会过多少时间才会将速度发出去
       output_delay: 0.025                    # s，用于速度前馈方向的旋转相位补偿；不额外叠加到参考采样时间
       use_small_gyro_mode: true              # 启用固定角速度模式，车头朝向与路径切线分离
       fixed_wz: 0.0                          # rad/s，小陀螺模式的固定角速度；0 表示不主动旋转
@@ -163,8 +163,8 @@ topology_planner:
   ros__parameters:
     use_sim_time: true
     TopoPlanner:
-      topology_yaml: "topo26.yaml"
       use_topology: false
+      topology_yaml: "topo26.yaml"
       allow_nearest_region_fallback: false  # 起终点不属于任何区域时，是否允许选择最近区域
       region_boundary_tolerance: 0.03       # m，识别点是否位于 Region 边界时的容差
       region_constraint_tolerance: 0.15     # m，路径区域归属复检的边界容差；不放宽障碍碰撞限制
