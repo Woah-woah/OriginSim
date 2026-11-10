@@ -145,8 +145,8 @@ RecoveryPlan RecoveryPlanner::plan(
         directions.push_back(backward);
     }
 
-    // 16 个均匀分布的搜索方向
-    constexpr int angle_samples = 16;
+    // 36 个均匀分布的搜索方向
+    constexpr int angle_samples = 36;
     for (int i = 0; i < angle_samples; ++i) {
         const double theta = 2.0 * M_PI * i / angle_samples;
         directions.emplace_back(std::cos(theta), std::sin(theta));

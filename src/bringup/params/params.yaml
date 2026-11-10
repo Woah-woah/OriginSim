@@ -132,10 +132,10 @@ nav_executor:
       obstacle_weight: 30.0                  # EDT 障碍软代价权重；不能替代 Footprint 硬碰撞检查
       obstacle_trust_region: 0.15            # m，每次局部线性化时预测 x/y 各自允许偏移的范围
       obstacle_iterations: 3                 # 障碍代价与安全平面重新线性化的最大迭代次数
-      vx_min: -1.7
-      vx_max: 1.7
-      vy_min: -1.7
-      vy_max: 1.7
+      vx_min: -2.6
+      vx_max: 2.6
+      vy_min: -2.6
+      vy_max: 2.6
       omega_min: -2.0
       omega_max: 2.0
       use_acc_constraints: true              # 舵轮起步必须满足下方加速度约束，避免首次起步冲击
@@ -147,7 +147,7 @@ nav_executor:
       alpha_max: 4.0
       max_working_set_recalculations: 200    # qpOASES 单次求解的工作集重计算次数上限
       eps_regularization: 1.0e-09            # QP 数值正则化系数，用于改善矩阵数值稳定性
-      reference_speed: 1.2                   # m/s，参考轨迹速度上限；不是直接发布的速度指令
+      reference_speed: 1.8                   # m/s，参考轨迹速度上限；不是直接发布的速度指令
       reference_acceleration: 1.0            # m/s²，参考轨迹时间参数化的加速度上限
       reference_yaw_rate: 1.0                # rad/s，参考轨迹转向速度上限；小陀螺模式角速度由 fixed_wz 指定
       control_delay_compensation: 0.05        # 从当前预测时刻算出速度，实际上会过多少时间才会将速度发出去

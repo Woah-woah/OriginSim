@@ -10,21 +10,32 @@ namespace minco_controller
 namespace
 {
 double wrap(double angle) {return std::atan2(std::sin(angle), std::cos(angle));}
+
+// MPC 曲率降速
+constexpr double kMaxLateralAcceleration = 1.2;  // m/s²
+constexpr double kCurvatureWindow = 0.25;        // m
+constexpr double kCurvatureEpsilon = 1e-4;
 }
 
-void PathTrajectory::setPath(const std::vector<ReferencePoint> & points,
-  double speed, double acceleration, double yaw_rate, bool track_yaw)
+void PathTrajectory::setPath(
+  const std::vector<ReferencePoint> & points,
+  double speed, 
+  double acceleration, 
+  double yaw_rate, 
+  bool track_yaw)
 {
   clear();
   if (points.empty() || !std::isfinite(speed) || speed <= 0.0 ||
     !std::isfinite(acceleration) || acceleration <= 0.0 ||
     !std::isfinite(yaw_rate) || yaw_rate <= 0.0)
   {throw std::invalid_argument("局部参考路径或参考运动上限无效");}
+
   for (const auto & point : points) {
     if (!point.pos.allFinite() || !std::isfinite(point.heading_yaw)) {
       throw std::invalid_argument("局部路径包含无效坐标或朝向");
     }
   }
+
   knots_.push_back({points.front().pos, track_yaw ? points.front().heading_yaw : 0.0});
   for (size_t i = 1; i < points.size(); ++i) {
     const auto previous = knots_.back();
@@ -44,11 +55,82 @@ void PathTrajectory::setPath(const std::vector<ReferencePoint> & points,
         previous.yaw + fraction * yaw_delta, previous.distance + fraction * distance});
     }
   }
+
   const double length = knots_.back().distance;
+
+  // 根据路径累计弧长 s，插值获取对应的二维位置
+  const auto positionAt = [this](double s) -> Eigen::Vector2d {
+    s = std::clamp(s, 0.0, knots_.back().distance);
+
+    auto it = std::lower_bound(
+      knots_.begin(), knots_.end(), s,
+      [](const Knot & knot, double distance) {
+        return knot.distance < distance;
+      });
+
+    if (it == knots_.begin()) {
+      return it->position;
+    }
+
+    if (it == knots_.end()) {
+      return knots_.back().position;
+    }
+
+    const auto & previous = *(it - 1);
+    const double ds = it->distance - previous.distance;
+
+    if (ds < 1e-9) {
+      return it->position;
+    }
+
+    const double ratio = (s - previous.distance) / ds;
+
+    return previous.position + ratio * (it->position - previous.position);
+  };
+
+
+  // 根据弧长窗口内的三个点估算路径曲率
+  const auto estimateCurvature = [&](double s) -> double {
+    const double s0 = std::max(0.0, s - kCurvatureWindow);
+    const double s1 = s;
+    const double s2 = std::min(length, s + kCurvatureWindow);
+
+    const Eigen::Vector2d p0 = positionAt(s0);
+    const Eigen::Vector2d p1 = positionAt(s1);
+    const Eigen::Vector2d p2 = positionAt(s2);
+
+    const Eigen::Vector2d a = p1 - p0;
+    const Eigen::Vector2d b = p2 - p1;
+    const Eigen::Vector2d c = p2 - p0;
+
+    const double denominator = a.norm() * b.norm() * c.norm();
+
+    if (denominator < 1e-8) {
+      return 0.0;
+    }
+
+    const double cross = a.x() * c.y() - a.y() * c.x();
+
+    return 2.0 * std::abs(cross) / denominator;
+  };
+
+
+  // 加入曲率限速
   for (auto & knot : knots_) {
     knot.speed = std::min(speed, std::sqrt(2.0 * acceleration *
         std::max(0.0, std::min(knot.distance, length - knot.distance))));
+
+    const double curvature = estimateCurvature(knot.distance);
+
+    if (std::isfinite(curvature) && curvature > kCurvatureEpsilon) {
+      const double curve_speed = std::sqrt(
+        kMaxLateralAcceleration / curvature);
+
+      knot.speed = std::min(knot.speed, curve_speed);
+    }
   }
+
+  // 前向加速度约束
   for (size_t i = 1; i < knots_.size(); ++i) {
     auto & a = knots_[i - 1];
     auto & b = knots_[i];
@@ -62,12 +144,16 @@ void PathTrajectory::setPath(const std::vector<ReferencePoint> & points,
     }
     b.speed = std::min(b.speed, std::sqrt(a.speed * a.speed + 2.0 * acceleration * ds));
   }
+
+  // 后向加速度约束
   for (size_t i = knots_.size(); i > 1; --i) {
     auto & a = knots_[i - 2];
     const auto & b = knots_[i - 1];
     a.speed = std::min(a.speed, std::sqrt(b.speed * b.speed +
         2.0 * acceleration * (b.distance - a.distance)));
   }
+
+
   for (size_t i = 1; i < knots_.size(); ++i) {
     const auto & a = knots_[i - 1];
     auto & b = knots_[i];
@@ -121,6 +207,7 @@ ReferencePoint PathTrajectory::sample(double time) const
   }
   return result;
 }
+
 
 double PathTrajectory::nearestTime(const State & state, double minimum_time) const
 {

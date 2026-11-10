@@ -60,6 +60,7 @@ Point point(double x, double y)
 }
 } // namespace
 
+
 ConnectorExecutor::ConnectorExecutor(
     ConnectorConfig config, std::string frame, std::vector<Point> footprint)
     : config_(config), frame_(std::move(frame)), footprint_(std::move(footprint))
@@ -92,6 +93,7 @@ ConnectorExecutor::ConnectorExecutor(
     throw std::invalid_argument("Connector footprint has zero area");
   }
 }
+
 
 void ConnectorExecutor::setPlan(const topology_global_planner::TopologyPlan & plan)
 {
@@ -152,6 +154,7 @@ void ConnectorExecutor::setPlan(const topology_global_planner::TopologyPlan & pl
   }
 }
 
+
 bool ConnectorExecutor::intersects(
   const Region & region, const std::vector<Point> & footprint, double padding) const
 {
@@ -196,6 +199,7 @@ void ConnectorExecutor::localizationLost()
     region.outside_since.reset();
   }
 }
+
 
 // 计算baselink要转多少度才能对齐狗洞
 std::optional<float> ConnectorExecutor::observePose(
