@@ -25,21 +25,13 @@ class ConnectorExecutor
 {
 public:
   using Clock = std::chrono::steady_clock;
-  using Command = std::function<void(bool)>;
-  using Log = std::function<void(const std::string &)>;
-  ConnectorExecutor(ConnectorConfig config,
-    std::string frame,
-    std::vector<geometry_msgs::msg::Point> footprint,
-    Command command,
-    Log log = {});
+  ConnectorExecutor(
+      ConnectorConfig config,
+      std::string frame,
+      std::vector<geometry_msgs::msg::Point> footprint);
   void setPlan(const topology_global_planner::TopologyPlan & plan);
-  void observePose(const geometry_msgs::msg::PoseStamped & pose, Clock::time_point now);
+  std::optional<float> observePose(const geometry_msgs::msg::PoseStamped & pose, Clock::time_point now);
   void localizationLost();
-
-  bool lowered() const
-  {
-    return lowered_;
-  }
 
   size_t regionCount() const
   {
@@ -62,16 +54,15 @@ private:
     std::optional<Clock::time_point> outside_since;
   };
 
-  bool intersects(const Region & region,
+  bool intersects(
+    const Region & region,
     const std::vector<geometry_msgs::msg::Point> & footprint,
-    double padding) const;
+    double padding
+  ) const;
   ConnectorConfig config_;
   std::string frame_;
   std::vector<geometry_msgs::msg::Point> footprint_;
-  Command command_;
-  Log log_;
   std::vector<Region> regions_;
-  bool lowered_{false};
   std::optional<Clock::time_point> last_pose_at_;
 };
 } // 命名空间 nav_executor

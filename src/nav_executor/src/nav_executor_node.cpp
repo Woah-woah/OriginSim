@@ -8,6 +8,8 @@
 #include <string>
 #include <unordered_set>
 
+#include "rm_interfaces/msg/gimbal_region_cmd.hpp"
+
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "nav_executor/path_planner.hpp"
 #include "minco_controller/trajectory_safety.hpp"
@@ -212,44 +214,22 @@ public:
     }
     ConnectorConfig connector_config;
     const bool connector_enabled = declare_parameter("connector_executor.enabled", true);
-    connector_config.region_half_width =
-      declare_parameter("connector_executor.region_half_width", 0.8);
+    connector_config.region_half_width = declare_parameter("connector_executor.region_half_width", 0.8);
     connector_config.entry_extension = declare_parameter("connector_executor.entry_extension", 1.0);
     connector_config.exit_extension = declare_parameter("connector_executor.exit_extension", 0.3);
-    connector_config.exit_hysteresis =
-      declare_parameter("connector_executor.exit_hysteresis", 0.05);
+    connector_config.exit_hysteresis = declare_parameter("connector_executor.exit_hysteresis", 0.05);
     connector_config.exit_debounce = declare_parameter("connector_executor.exit_debounce", 0.2);
     connector_config.pose_timeout = declare_parameter("connector_executor.pose_timeout", 0.5);
     connector_pose_timeout_ = connector_config.pose_timeout;
+
+    // 初始化，后续角度发布交给updateConnector
     if (connector_enabled) {
-      pitch_pub_ =
-        create_publisher<std_msgs::msg::Bool>("/serial/head_down_cmd", rclcpp::QoS(10).reliable());
+      align_pub_ = this->create_publisher<rm_interfaces::msg::GimbalRegionCmd>("/serial/gimbal_region_cmd", rclcpp::QoS(10).reliable());
+
       connector_ = std::make_unique<ConnectorExecutor>(
-        connector_config,
-        global_frame_,
-        costmap_->getRobotFootprint(),
-        [this](bool lower) {
-          std_msgs::msg::Bool message;
-          message.data = lower;
-          pitch_pub_->publish(message);
-          RCLCPP_INFO(get_logger(), "通道机构指令 /serial/head_down_cmd：%s", lower ? "低头" : "抬头");
-        },
-        [this](const std::string & message) {
-          RCLCPP_INFO(get_logger(), "%s", message.c_str());
-        });
-      referee_sub_ = create_subscription<referee_msg::msg::Referee>("/Referee",
-        rclcpp::SensorDataQoS().keep_last(1),
-        [this](referee_msg::msg::Referee::ConstSharedPtr msg) {
-          if (!last_head_status_ || *last_head_status_ != msg->head_status) {
-            const char * status =
-              msg->head_status == 1 ? "已低头" : (msg->head_status == 2 ? "已抬头" : "未知状态");
-            RCLCPP_INFO(get_logger(),
-              "裁判系统反馈机构状态=%u（%s）；仅供诊断，不参与通道低头控制判断",
-              static_cast<unsigned>(msg->head_status),
-              status);
-            last_head_status_ = msg->head_status;
-          }
-        });
+          connector_config,
+          global_frame_,
+          costmap_->getRobotFootprint());
     }
     // 恢复已承诺的通道接近过程并保留配置中的入口和出口
     connector_entry_clearance_ = body_radius + 0.25;
@@ -785,36 +765,53 @@ private:
     }
   }
 
+
   void updateConnector(
     const geometry_msgs::msg::PoseStamped * pose, TaskManager::Clock::time_point now)
   {
     if (!connector_) {
       return;
     }
+    
     bool valid = pose != nullptr;
+    
     if (valid) {
       const auto stamp = rclcpp::Time(pose->header.stamp, get_clock()->get_clock_type());
       const double age = (get_clock()->now() - stamp).seconds();
       valid = stamp.nanoseconds() > 0 && age >= -0.1 && age <= connector_pose_timeout_;
     }
+    
     if (valid) {
-      connector_->observePose(*pose, now);
-    } else {
-      connector_->localizationLost();
-      RCLCPP_WARN_THROTTLE(get_logger(),
-        *get_clock(),
-        5000,
-        "通道位置判断暂不可用或位姿已过期，保持原低头指令和区域状态");
-    }
-    if (now >= next_pitch_conflict_check_) {
-      next_pitch_conflict_check_ = now + std::chrono::seconds(5);
-      if (count_publishers("/serial/head_down_cmd") > 1) {
-        RCLCPP_WARN(get_logger(),
-          "低头指令话题 /serial/head_down_cmd 存在多个发布者，请保留一个控制来源，或"
-          "关闭 connector_executor.enabled，避免机构控制指令相互冲突");
+      auto angle = connector_->observePose(*pose, now);
+      
+      if (angle.has_value()) {
+        rm_interfaces::msg::GimbalRegionCmd msg;
+        
+        msg.chassis_mode = 1;
+        msg.pass_connector_mode = 1;
+        msg.pass_region_angle = angle.value();
+
+        align_pub_->publish(msg);
+
+        RCLCPP_INFO(get_logger(), "通道对齐角度：%.2f°", angle.value());
       }
+    } else {
+        rm_interfaces::msg::GimbalRegionCmd msg;
+        msg.chassis_mode = 2;
+        msg.pass_connector_mode = 0;
+        msg.pass_region_angle = 0.0f;
+
+        align_pub_->publish(msg);
+
+        connector_->localizationLost();
+        RCLCPP_WARN_THROTTLE(get_logger(),
+          *get_clock(),
+          5000,
+          "通道位置判断暂不可用或位姿已过期，保持原低头指令和区域状态");
     }
+
   }
+
 
   void publishTask()
   {
@@ -883,16 +880,14 @@ private:
     }
   }
 
+
   std::shared_ptr<map_server::MapClient> costmap_;
   TaskManager tasks_;
   std::unique_ptr<ConnectorExecutor> connector_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pitch_pub_;
-  rclcpp::Subscription<referee_msg::msg::Referee>::SharedPtr referee_sub_;
-  std::optional<uint8_t> last_head_status_;
+  rclcpp::Publisher<rm_interfaces::msg::GimbalRegionCmd>::SharedPtr align_pub_;
   std::optional<PlanIdentity> connector_plan_identity_;
   bool connector_has_plan_{false};
   double connector_pose_timeout_{0.5};
-  TaskManager::Clock::time_point next_pitch_conflict_check_{};
   std::atomic<bool> emergency_stop_requested_{false};
   std::atomic<bool> emergency_latched_{false};
   std::mutex emergency_mutex_;
@@ -922,7 +917,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr replan_srv_;
   rclcpp::TimerBase::SharedPtr tick_;
 };
-} // 命名空间 nav_executor
+} // namespace nav_executor
 
 int main(int argc, char ** argv)
 {

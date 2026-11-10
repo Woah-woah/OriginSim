@@ -150,7 +150,7 @@ nav_executor:
       reference_speed: 1.2                   # m/s，参考轨迹速度上限；不是直接发布的速度指令
       reference_acceleration: 1.0            # m/s²，参考轨迹时间参数化的加速度上限
       reference_yaw_rate: 1.0                # rad/s，参考轨迹转向速度上限；小陀螺模式角速度由 fixed_wz 指定
-      control_delay_compensation: 0.1        # 从当前预测时刻算出速度，实际上会过多少时间才会将速度发出去
+      control_delay_compensation: 0.05        # 从当前预测时刻算出速度，实际上会过多少时间才会将速度发出去
       output_delay: 0.025                    # s，用于速度前馈方向的旋转相位补偿；不额外叠加到参考采样时间
       use_small_gyro_mode: true              # 启用固定角速度模式，车头朝向与路径切线分离
       fixed_wz: 0.0                          # rad/s，小陀螺模式的固定角速度；0 表示不主动旋转

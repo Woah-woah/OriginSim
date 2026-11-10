@@ -19,6 +19,7 @@ set(dependencies
   tf2
   tf2_geometry_msgs
   minco_controller
+  rm_interfaces
 )
 foreach(dependency IN LISTS dependencies)
   find_package(${dependency} REQUIRED)

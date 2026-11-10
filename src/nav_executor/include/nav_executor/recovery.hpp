@@ -12,12 +12,12 @@ namespace nav_executor
 {
 struct RecoveryConfig
 {
-  // 用户只配置脱困行为；运动约束与安全参数继承现有导航配置。
+
   bool enabled{true};
   int max_attempts{3};
   double speed{0.18}, max_distance{1.5}, timeout{30.0}, cooldown{3.0};
 
-  // 以下为内部派生值，不声明独立的 ROS/YAML 参数。
+  // 以下为内部派生值，不声明独立的 ROS/YAML 参数
   double total_distance{4.5}, planning_timeout{0.15};
   double stop_timeout{3.0}, settle_time{0.3};
   double acceleration{0.35}, braking{0.35}, velocity_tolerance{0.08};

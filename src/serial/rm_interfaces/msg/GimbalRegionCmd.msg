@@ -1,3 +1,3 @@
 int32 chassis_mode
-int32 pass_special_region
+int32 pass_connector_mode
 float32 pass_region_angle

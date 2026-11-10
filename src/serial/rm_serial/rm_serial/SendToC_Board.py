@@ -97,12 +97,10 @@ class SNode(Node):
 
         #导航
         self.sub_nav = self.create_subscription(Twist, '/cmd_vel_chassis', self.nav_callback,rclpy.qos.qos_profile_sensor_data)
-        self.sub_dip_angle = self.create_subscription(Float32,"/dip_angle",self.dip_angle_callback,10)
         self.sub_nav = self.create_subscription(GimbalRegionCmd, '/serial/gimbal_region_cmd', self.chassis_mode_callback,10)
         
         self.sub_pitch = self.create_subscription(Bool,'/serial/nav_pitch',self.pitch_callback,10)
         self.sub_reach_goal = self.create_subscription(Bool,"/reach_hero",self.goal_callback,10)
-
 
         self.publish_gimbal = self.create_subscription(Gimbal,"gimbal_status",self.yaw_C_board_callback,10)
 
@@ -110,12 +108,9 @@ class SNode(Node):
         self.yaw_C_board = 0.0              # 从C板传来的距离零点的距离 
         self.exp_gimbal_angle = 0.0         # 当前时刻期望的加上云台零点的角度
         self.in_region = False              # 判断是否为刚进入特殊路段
-
-
-
         #-----------------------模式相关数据---------------------------#
         self.chassis_mode  = 2              # 底盘模式(1跟头 2陀螺)
-        self.pass_bumpy_mode = 0             # 是否正在gimbal_region_callback过颠簸路段
+        self.pass_connector_mode = 0        # 是否正在gimbal_region_callback过狗洞
         self.pitch = 0                      # pitch为打人模式还是前哨模式
         #-----------------------自瞄相关数据---------------------------#
         self.yaw_aim = 0.0                  # 自瞄yaw角
@@ -126,9 +121,7 @@ class SNode(Node):
         self.vx = 0.0                       # 导航速度x
         self.vy = 0.0                       # 导航速度x
         self.yaw_angle_follow_head = 0.0    # 当为跟头模式时云台预期角度
-        self.super_cap_mode = 0             # 是否正在上坡
         self.reach_hero = False             # 是否到达抓英雄点位
-
 
 
     def pitch_callback(self,msg:Bool):
@@ -136,28 +129,20 @@ class SNode(Node):
             self.pitch = 1
         else:
             self.pitch = 0
+
     def yaw_C_board_callback(self,msg:Gimbal):
         self.yaw_C_board = msg.yaw
 
     def chassis_mode_callback(self,msg:GimbalRegionCmd):
         self.chassis_mode = msg.chassis_mode
-        self.pass_bumpy_mode = msg.pass_special_region
-        self.yaw_angle_follow_head =msg.pass_region_angle
-        if self.chassis_mode == 2 and self.pass_bumpy_mode == 0 : # 离开颠簸路段
-            self.in_region = False
-            self.exp_gimbal_angle = 0.0
-        elif self.chassis_mode == 1 and self.pass_bumpy_mode == 1 and not self.in_region:
-            self.in_region = True
-            self.exp_gimbal_angle = msg.pass_region_angle + self.yaw_C_board
-            print(self.exp_gimbal_angle)
-        
+        self.pass_connector_mode = msg.pass_connector_mode    # 是否正在过狗洞
+        self.yaw_angle_follow_head = msg.pass_region_angle
 
-    def dip_angle_callback(self, msg:Float32):
-        degree = msg.data
-        if degree < 8.0:
-            self.super_cap_mode = 0
+        if self.pass_connector_mode == 1:
+            self.exp_gimbal_angle = msg.pass_region_angle + self.yaw_C_board
         else:
-            self.super_cap_mode = 2
+            self.exp_gimbal_angle = 0.0;
+        # print(self.exp_gimbal_angle)
             
     def nav_callback(self, msg:Twist):
          self.vx=msg.linear.x
@@ -167,10 +152,12 @@ class SNode(Node):
         self.msg_fire=msg.fire_advice
         self.yaw_aim=msg.yaw
         self.pitch_aim=msg.pitch
+
     def back_callback(self,msg):
         self.turn_back=msg.data
+
     def goal_callback(self,msg):
-        self.reach_hero=msg.data
+        self.reach_hero = msg.data
 
     '''
     pack format:
@@ -201,7 +188,6 @@ class SNode(Node):
             (self.vx, 'f'),
             (self.vy, 'f'),
             (self.exp_gimbal_angle,'f'),
-            (self.super_cap_mode, 'B'),
             (self.reach_hero, 'B'),
         ]
         message = build_all_message(field_values)

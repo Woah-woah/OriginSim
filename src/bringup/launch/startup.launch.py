@@ -55,7 +55,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('map_server'), 'launch', 'map_server.launch.py')),
         launch_arguments={
-            'map': os.path.join(bringup_dir, 'map', 'rmuc_2025_normalized.yaml'),
+            'map': os.path.join(bringup_dir, 'map', 'rmuc_2026.yaml'),
             'use_sim_time': 'true',
             'params_file': params_file,
         }.items(),

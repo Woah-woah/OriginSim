@@ -61,9 +61,8 @@ Point point(double x, double y)
 } // namespace
 
 ConnectorExecutor::ConnectorExecutor(
-  ConnectorConfig config, std::string frame, std::vector<Point> footprint, Command command, Log log)
-    : config_(config), frame_(std::move(frame)), footprint_(std::move(footprint)),
-      command_(std::move(command)), log_(std::move(log))
+    ConnectorConfig config, std::string frame, std::vector<Point> footprint)
+    : config_(config), frame_(std::move(frame)), footprint_(std::move(footprint))
 {
   for (double value : {config.region_half_width, config.pose_timeout}) {
     if (!std::isfinite(value) || value <= 0.0) {
@@ -77,8 +76,8 @@ ConnectorExecutor::ConnectorExecutor(
       throw std::invalid_argument("Connector region margins and debounce must be nonnegative");
     }
   }
-  if (frame_.empty() || !command_ || footprint_.size() < 3) {
-    throw std::invalid_argument("Connector geometry requires frame, command and polygon footprint");
+  if (frame_.empty() || footprint_.size() < 3) {
+    throw std::invalid_argument("Connector geometry requires frame and polygon footprint");
   }
   double area = 0.0;
   for (size_t i = 0; i < footprint_.size(); ++i) {
@@ -198,7 +197,8 @@ void ConnectorExecutor::localizationLost()
   }
 }
 
-void ConnectorExecutor::observePose(
+// 计算baselink要转多少度才能对齐狗洞
+std::optional<float> ConnectorExecutor::observePose(
   const geometry_msgs::msg::PoseStamped & pose, Clock::time_point now)
 {
   const auto & p = pose.pose.position;
@@ -208,7 +208,7 @@ void ConnectorExecutor::observePose(
       !std::isfinite(norm) || std::abs(norm - 1.0) > 0.01)
   {
     localizationLost();
-    return;
+    return std::nullopt;
   }
   if (last_pose_at_ &&
       (now < *last_pose_at_ ||
@@ -228,40 +228,47 @@ void ConnectorExecutor::observePose(
     world.push_back(
       point(p.x + r00 * vertex.x + r01 * vertex.y, p.y + r10 * vertex.x + r11 * vertex.y));
   }
-  bool lowered = false;
+
+  std::optional<float> result;
+
   for (auto & region : regions_) {
-    if (intersects(region, world, region.occupied ? config_.exit_hysteresis : 0.0)) {
-      region.outside_since.reset();
-      if (!region.occupied && log_) {
-        log_("进入需要低头通过的通道区域：" + region.id);
-      }
-      region.occupied = true;
-    } else {
-      if (!region.outside_since) {
-        region.outside_since = now;
-      }
-      if (std::chrono::duration<double>(now - *region.outside_since).count() >=
-          config_.exit_debounce)
+      if (intersects(region, world, region.occupied ? config_.exit_hysteresis : 0.0))
       {
-        if (region.occupied && log_) {
-          log_("离开需要低头通过的通道区域：" + region.id);
+          region.outside_since.reset();
+          region.occupied = true;
+      } 
+      else 
+      {
+        if (!region.outside_since) {
+            region.outside_since = now;
         }
-        region.occupied = false;
+
+        if (std::chrono::duration<double>(now - *region.outside_since).count() >= config_.exit_debounce)
+        {
+            region.occupied = false;
+        }
       }
-    }
-    lowered = lowered || region.occupied;
+
+      // 在 Connector 区域内，持续计算对齐角度
+      if (region.current && region.occupied && !result) {
+          const double robot_yaw = std::atan2(r10, r00);
+          const double connector_yaw = std::atan2(region.uy, region.ux);
+
+          constexpr double PI = 3.14159265358979323846;
+
+          const double angle = std::remainder(connector_yaw + PI - robot_yaw, 2.0 * PI);
+
+          result = static_cast<float>(angle * 180.0 / PI);
+      }
   }
-  if (lowered != lowered_) {
-    command_(lowered);
-    lowered_ = lowered;
-  }
-  regions_.erase(std::remove_if(regions_.begin(),
-                   regions_.end(),
-                   [&](const Region & r) {
-                     return !r.current && !r.occupied && r.outside_since &&
-                            std::chrono::duration<double>(now - *r.outside_since).count() >=
-                              config_.exit_debounce;
-                   }),
-    regions_.end());
+
+  regions_.erase(
+      std::remove_if(regions_.begin(), regions_.end(), [&](const Region & r) {
+              return !r.current && !r.occupied && r.outside_since &&
+                    std::chrono::duration<double>(now - *r.outside_since).count() >= config_.exit_debounce;}),
+      regions_.end()
+  );
+
+  return result;
 }
-} // 命名空间 nav_executor
+} // namespace nav_executor
