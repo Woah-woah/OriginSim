@@ -357,11 +357,13 @@ const topology_global_planner::Segment * TaskManager::currentSegment() const
   return &plan_.segments[segment_index_];
 }
 
+
 bool TaskManager::isPlanConfirmed(PlanIdentity identity) const
 {
   return goal_.has_value() && state_ == TaskState::PATH_READY && identity == identity_ &&
          !plan_.full_path.poses.empty();
 }
+
 
 void TaskManager::resetProgress()
 {
@@ -372,6 +374,7 @@ void TaskManager::resetProgress()
   connector_progress_ = -INFINITY;
   previous_position_.reset();
 }
+
 
 bool TaskManager::observeProgress(
   PlanIdentity identity, const geometry_msgs::msg::PoseStamped & pose, double entry_clearance)
@@ -479,22 +482,31 @@ bool TaskManager::observeProgress(
   return previous_index != segment_index_;
 }
 
+
 bool TaskManager::routeInvalid(const ReplanEvent & event, Clock::time_point now)
 {
   if (!isPlanConfirmed(event.identity) || (event.reason != ReplanReason::PATH_DEVIATION &&
                                             event.reason != ReplanReason::EXECUTION_STALLED &&
-                                            event.reason != ReplanReason::PATH_BLOCKED))
+                                            event.reason != ReplanReason::PATH_BLOCKED &&
+                                            event.reason != ReplanReason::MPC_PREDICTED_COLLISION))
   {
     return false;
   }
+
   // 立即撤销路径并停车，冷却时间仅延迟新规划的调度
   replan();
   retry_at_ = std::max(now, next_route_plan_at_);
+
+  if (event.reason == ReplanReason::MPC_PREDICTED_COLLISION) {
+    retry_at_ = std::max(retry_at_, now + std::chrono::milliseconds(1200)); // mpc预测碰撞 停车后延迟1.2s开始重规划
+  }
+
   route_replan_pending_ = true;
   last_replan_reason_ = event.reason;
   ++replan_count_;
   return true;
 }
+
 
 const char * TaskManager::reasonName(ReplanReason reason)
 {
@@ -507,7 +519,9 @@ const char * TaskManager::reasonName(ReplanReason reason)
     return "EXECUTION_STALLED";
   case ReplanReason::PATH_BLOCKED:
     return "PATH_BLOCKED";
+  case ReplanReason::MPC_PREDICTED_COLLISION:
+    return "MPC_PREDICTED_COLLISION";
   }
   return "UNKNOWN";
 }
-} // 命名空间 nav_executor
+} // namespace nav_executor

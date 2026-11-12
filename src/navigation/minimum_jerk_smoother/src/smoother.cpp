@@ -150,7 +150,7 @@ Result Smoother::smooth(const Plan & original, const map_server::MapView & map,
     }
     // 与前端共用地图语义；额外膨胀覆盖障碍栅格面积和多项式采样间隙。
     const double resolution = map.geometry().resolution;
-    const double padding = body_radius + 2.0 * resolution;
+    const double padding = body_radius + std::sqrt(0.5) * resolution;
     const auto blocked = map.clearanceMask(padding);
     tdt::MinimumSnap::Map binary(map.geometry().height, map.geometry().width);
     for (unsigned int y = 0; y < map.geometry().height; ++y) {

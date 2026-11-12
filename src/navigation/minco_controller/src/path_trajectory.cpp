@@ -12,9 +12,9 @@ namespace
 double wrap(double angle) {return std::atan2(std::sin(angle), std::cos(angle));}
 
 // MPC 曲率降速
-constexpr double kMaxLateralAcceleration = 1.2;  // m/s²
-constexpr double kCurvatureWindow = 0.25;        // m
-constexpr double kCurvatureEpsilon = 1e-4;
+constexpr double kMaxLateralAcceleration = 1.0;  // 最大允许向心加速度，决定弯道速度上限
+constexpr double kCurvatureWindow = 0.35;        // 估计曲率时，前后各取多远的路径点
+constexpr double kCurvatureEpsilon = 1e-4;       // 小于该曲率就不启用曲率限速
 }
 
 void PathTrajectory::setPath(

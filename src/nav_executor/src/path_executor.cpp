@@ -969,6 +969,8 @@ public:
       }
     } catch (const ConnectorTraversalInterrupted & exception) {
       fail(exception.what(), ExecutionFailure::CONNECTOR_TRAVERSAL_INTERRUPTED);
+    } catch (const minco_controller::PredictedCollision & exception) {
+      fail(exception.what(), ExecutionFailure::MPC_PREDICTION_COLLISION);
     } catch (const minco_controller::ControllerInfeasible & exception) {
       fail(exception.what(), ExecutionFailure::CONTROLLER_INFEASIBLE);
     } catch (const std::exception & exception) {

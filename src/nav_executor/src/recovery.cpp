@@ -50,7 +50,7 @@ RecoveryConfig RecoveryConfig::load(const rclcpp::Node::SharedPtr & node)
   c.velocity_tolerance = node->get_parameter("stopped_velocity_tolerance").as_double() + c.acceleration * c.delay;
   c.planning_timeout = std::min(0.15, node->get_parameter("control_timeout").as_double() * 0.75);
   c.settle_time = std::max(0.3, c.delay + 1.0 / node->get_parameter("controller_frequency").as_double());
-  c.stop_timeout = std::min(c.timeout, std::max(3.0, c.speed / c.braking + c.delay));
+  c.stop_timeout = std::min(c.timeout, std::max(5.0, c.speed / c.braking + c.delay));
   c.total_distance = c.max_distance * c.max_attempts;
   c.progress_timeout = std::min(3.0, c.timeout / 3.0);
   c.validate();

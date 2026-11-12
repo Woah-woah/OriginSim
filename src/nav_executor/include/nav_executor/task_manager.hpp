@@ -32,12 +32,14 @@ enum class TaskState
   SUCCEEDED,
   FAILED
 };
+
 enum class ReplanReason
 {
   NONE,
   PATH_DEVIATION,
   EXECUTION_STALLED,
-  PATH_BLOCKED
+  PATH_BLOCKED,
+  MPC_PREDICTED_COLLISION
 };
 
 struct PlanIdentity

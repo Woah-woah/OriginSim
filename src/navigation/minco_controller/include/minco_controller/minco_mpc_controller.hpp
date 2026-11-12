@@ -30,6 +30,13 @@ public:
   using std::runtime_error::runtime_error;
 };
 
+// 普通导航模式下，MPC 预测运动存在碰撞风险
+class PredictedCollision : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
+
 class MincoMpcController
 {
 public:

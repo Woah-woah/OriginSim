@@ -261,12 +261,18 @@ void MincoMpcController::setRecoveryContacts(const RecoveryContacts & contacts)
   recovery_contacts_ = contacts;
 }
 
+
 void MincoMpcController::checkPrediction(
-  const std::vector<State> & prediction, const std::string & stage,
+  const std::vector<State> & prediction, 
+  const std::string & stage,
   const TrajectorySafety & field) const
 {
   RecoveryTimer timer(RecoveryMetric::PREDICTION);
-  if (prediction.empty()) {throw ControllerInfeasible("MPC 预测轨迹为空");}
+
+  if (prediction.empty()) {
+    throw ControllerInfeasible("MPC 预测轨迹为空");
+  }
+
   try {
     for (size_t i = 0; i < prediction.size(); ++i) {
       const auto & previous = prediction[i ? i - 1 : 0];
@@ -278,11 +284,20 @@ void MincoMpcController::checkPrediction(
         field.checkMotion(previous, prediction[i], stage);
       }
     }
-  } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
+  } catch (const FootprintObstacleViolation & error) {
+      if (!recovery_mode_) {         // 不在recovery
+        throw PredictedCollision(error.what());
+      }
+      throw ControllerInfeasible(error.what());
+  } catch (const std::runtime_error & error) {
+      throw ControllerInfeasible(error.what());
+  }
 }
 
+
 geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
-  const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & measured_speed)
+  const geometry_msgs::msg::PoseStamped & pose, 
+  const geometry_msgs::msg::Twist & measured_speed)
 {
   RecoveryTimer mpc_timer(RecoveryMetric::MPC);
   recoveryStage("mpc_setup");
@@ -291,7 +306,9 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   if (pose.header.frame_id != costmap_->getGlobalFrameID() || !finitePose(pose.pose) ||
     !Eigen::Vector3d(measured_speed.linear.x, measured_speed.linear.y,
       measured_speed.angular.z).allFinite())
-  {throw std::invalid_argument("局部控制器收到无效位姿、坐标系或实测速度");}
+  {
+    throw std::invalid_argument("局部控制器收到无效位姿、坐标系或实测速度");
+  }
   const double yaw = tf2::getYaw(pose.pose.orientation);
   const double c = std::cos(yaw), s = std::sin(yaw);
   // PathExecutor already transformed the odometry child frame and lever arm
@@ -370,9 +387,19 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     // 初始集合来自执行器停稳时的快照；求解期间绝不重新收集或扩大。
     recovery_contacts_.update(snapshot, field, observed);
   }
+
   const auto * escape_contacts = recovery_mode_ ? &recovery_contacts_.cells : nullptr;
+  
   if (!recovery_mode_ || recovery_contacts_.count == 0) {
-    field.checkPose(observed, "当前实际车体轮廓");
+    try {
+      field.checkPose(observed, "当前实际车体轮廓");
+    } 
+    catch (const FootprintObstacleViolation & error) {
+      if (!recovery_mode_) {
+        throw ControllerInfeasible(error.what());
+      }
+      throw;
+    }
   }
   // This segment is fixed by measured velocity and cannot be repaired by U.
   try {
@@ -387,6 +414,7 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
         };
       const auto paired = snapshot.derivedMaps();
       const bool generated = costmap_->get_parameter("footprint").as_string().empty();
+
       RCLCPP_WARN(node->get_logger(),
         "延迟预测轮廓诊断：地图版本=%llu，时间戳=%lld纳秒，坐标系=%s，延迟=%.3f秒；"
         "实测速度=(%.4f,%.4f)米/秒，角速度=%.4f弧度/秒，轮廓来源=%s，顶点数=%zu，安全余量=%.4f米；"
@@ -395,8 +423,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
         pose.header.frame_id.c_str(), control_delay_, observed.vx, observed.vy, observed.omega,
         generated ? "按半径生成的近似轮廓（含已有外扩）" : "配置的车体轮廓（含已有外扩）",
         footprint.size(), collision_margin_, trigger.what());
+        
       RCLCPP_WARN(node->get_logger(), "当前实际位姿＋车体轮廓：%s；位姿=(%.6f,%.6f,%.6f)",
         diagnose(observed).c_str(), observed.x, observed.y, observed.yaw);
+
       RCLCPP_WARN(node->get_logger(), "延迟预测位姿＋车体轮廓：%s；位姿=(%.6f,%.6f,%.6f)",
         diagnose(current).c_str(), current.x, current.y, current.yaw);
     } catch (const std::exception & error) {
@@ -438,6 +468,7 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   command_model.fixed_angular_velocity = small_gyro_mode_;
   command_model.fixed_wz = fixed_wz_;
   recoveryStage("solver");
+  
   if (!solver_->solve(current, reference, control, &prediction, sample_cost, &observed,
     sample_envelope, command_model, sample_motion))
   {
@@ -499,7 +530,15 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
         field.checkEnvelope(observed, control, control_delay_, config_.control_period,
           "指令保持期间的轮廓安全检查");
       }
-    } catch (const std::runtime_error & error) {throw ControllerInfeasible(error.what());}
+    } catch (FootprintObstacleViolation & error) {
+      if (!recovery_mode_) {
+        throw PredictedCollision(error.what());
+      }
+      throw ControllerInfeasible(error.what());
+    
+    } catch (const std::runtime_error & error) {
+      throw ControllerInfeasible(error.what());
+    }
   }
   // 本周期只使用冻结快照完成碰撞检查；正常换图留给下一周期，不撤销成功求解。
   // 发布前仍要求最新地图健康、消息有效且生产者未重启。

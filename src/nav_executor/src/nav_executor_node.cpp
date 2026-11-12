@@ -582,7 +582,19 @@ public:
         // 控制线程直接查询当前视图，不能使用规划线程滞后一周期的缓存状态。
         return costmap_->isCurrent();
       },
+      
       [this](PlanIdentity identity, const std::string & error, ExecutionFailure kind) {
+        if (kind == ExecutionFailure::MPC_PREDICTION_COLLISION) {
+          RCLCPP_WARN(get_logger(), "MPC 预测碰撞，触发全局重规划：%s", error.c_str());
+
+          ReplanEvent event;
+          event.identity = identity;
+          event.reason = ReplanReason::MPC_PREDICTED_COLLISION;
+
+          handleReplanEvent(event, TaskManager::Clock::now());
+          return;
+        }
+
         if (kind == ExecutionFailure::MAP_CHANGED) {
           if (tasks_.executionFailed(identity, error, TaskManager::Clock::now())) {
             worker_->invalidate(tasks_.generation());
@@ -590,9 +602,12 @@ public:
           }
           return;
         }
+
         if ((kind == ExecutionFailure::CONTROLLER_INFEASIBLE ||
-          kind == ExecutionFailure::CONNECTOR_TRAVERSAL_INTERRUPTED) &&
-          requestRecovery(identity)) {return;}
+             kind == ExecutionFailure::CONNECTOR_TRAVERSAL_INTERRUPTED) && requestRecovery(identity)) {
+            return;
+        }
+
         if (tasks_.terminalFailure(identity, error)) {
           worker_->invalidate(tasks_.generation());
           publishTask();

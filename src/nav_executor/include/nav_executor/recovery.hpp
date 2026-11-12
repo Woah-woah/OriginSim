@@ -19,7 +19,7 @@ struct RecoveryConfig
 
   // 以下为内部派生值，不声明独立的 ROS/YAML 参数
   double total_distance{4.5}, planning_timeout{0.15};
-  double stop_timeout{3.0}, settle_time{0.3};
+  double stop_timeout{5.0}, settle_time{0.3};
   double acceleration{0.35}, braking{0.35}, velocity_tolerance{0.08};
   double waypoint_tolerance{0.035}, tracking_tolerance{0.15};
   double progress_timeout{3.0}, minimum_progress{0.03};

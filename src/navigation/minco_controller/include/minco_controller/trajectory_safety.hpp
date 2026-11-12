@@ -17,6 +17,7 @@
 
 namespace minco_controller
 {
+
 namespace collision_geometry
 {
 using Point = Eigen::Vector2d;
@@ -217,6 +218,13 @@ inline std::vector<std::vector<Point>> convexParts(const map_server::Footprint &
   return result;
 }
 }  // namespace collision_geometry
+
+
+class FootprintObstacleViolation : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
 
 // EDT 仅提供软代价；所有硬安全约束均由有朝向的 Footprint 和原始障碍栅格生成。
 class TrajectorySafety
@@ -678,7 +686,9 @@ private:
           if (p.x() - margin < field_->geometry.origin_x || p.y() - margin < field_->geometry.origin_y ||
             p.x() + margin >= field_->geometry.origin_x + field_->geometry.width * field_->geometry.resolution ||
             p.y() + margin >= field_->geometry.origin_y + field_->geometry.height * field_->geometry.resolution)
-          {throw std::runtime_error(stage + "：车体轮廓及安全余量超出地图范围");}
+          {
+            throw std::runtime_error(stage + "：车体轮廓及安全余量超出地图范围");
+          }
         }
         return visitObstacles(patch.body, margin, [&](int x, int y) {
             const Point lower(field_->geometry.origin_x + x * field_->geometry.resolution, field_->geometry.origin_y + y * field_->geometry.resolution);
@@ -692,7 +702,7 @@ private:
               {
                   return true;
               }
-              throw std::runtime_error(stage + "：车体轮廓与" +
+              throw FootprintObstacleViolation(stage + "：车体轮廓与" +
                 std::string("障碍或未知栅格") +
                 "相交或净空不足，轮廓间距=" + std::to_string(std::sqrt(separation.squared_distance)) +
                 "米，安全余量=" + std::to_string(margin_) + "米，转动检查误差上界=" +
