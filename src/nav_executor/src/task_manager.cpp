@@ -222,6 +222,7 @@ bool TaskManager::accept(PlanningResult result, Clock::time_point now)
   return true;
 }
 
+
 const char * TaskManager::stateName(TaskState state)
 {
   switch (state) {
@@ -247,6 +248,7 @@ const char * TaskManager::stateName(TaskState state)
   return "UNKNOWN";
 }
 
+
 bool TaskManager::executionFailed(
   PlanIdentity identity, const std::string & error, Clock::time_point now)
 {
@@ -262,6 +264,7 @@ bool TaskManager::executionFailed(
     TaskState::TERMINAL_FAILED : TaskState::FAILED;
   return true;
 }
+
 
 // Recovery 保留目标和通道机构区域；旧导航路径在此状态不能输出控制。
 bool TaskManager::beginRecovery(PlanIdentity identity, Clock::time_point now, int max_attempts)
@@ -283,10 +286,12 @@ bool TaskManager::beginRecovery(PlanIdentity identity, Clock::time_point now, in
   return true;
 }
 
+
 bool TaskManager::recoveryConfirmed(PlanIdentity identity) const
 {
   return goal_ && state_ == TaskState::RECOVERING && identity == identity_;
 }
+
 
 bool TaskManager::terminalFailure(PlanIdentity identity, const std::string & error)
 {

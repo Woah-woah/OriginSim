@@ -4,7 +4,7 @@ map_server:
     global_frame: map
     robot_base_frame: base_link_fake
     footprint_frame: base_link_fake
-    robot_radius: 0.20
+    robot_radius: 0.15
     footprint: ''
     footprint_padding: 0.01
     track_unknown_space: true
@@ -52,7 +52,7 @@ map_client:
     global_frame: map                 # 地图与规划使用的固定坐标系
     robot_base_frame: base_link_fake
     footprint_frame: base_link_fake
-    robot_radius: 0.20
+    robot_radius: 0.15
     footprint: ''
     footprint_padding: 0.01
     track_unknown_space: true
@@ -124,11 +124,11 @@ nav_executor:
     MPC:
       dt: 0.02                               # s，MPC 预测步长；需与控制频率一起考虑
       horizon: 25                            # 预测步数；当前预测时域为 25 × 0.02 = 0.5 s
-      Q: [5.0, 5.0, 2.0]                     # 状态误差权重 [x, y, yaw]；当前平移项由 q_along/q_cross 替代，仅 yaw 项生效
+      Q: [9.0, 9.0, 2.0]                     # 状态误差权重 [x, y, yaw]；当前平移项由 q_along/q_cross 替代，仅 yaw 项生效
       R: [1.0, 1.0, 0.5]                     # 速度前馈偏差权重 [vx, vy, wz]，越大越倾向参考速度
       control_delta_weight: [2.0, 2.0, 0.5]  # 相邻控制量变化权重 [vx, vy, wz]，抑制速度突变
-      q_along: 5.0                           # 沿路径切线方向的位置误差权重，与车头朝向无关
-      q_cross: 5.0                           # 垂直于路径切线方向的位置误差权重，与车头朝向无关
+      q_along: 9.0                           # 沿路径切线方向的位置误差权重，与车头朝向无关
+      q_cross: 9.0                           # 垂直于路径切线方向的位置误差权重，与车头朝向无关
       obstacle_weight: 30.0                  # EDT 障碍软代价权重；不能替代 Footprint 硬碰撞检查
       obstacle_trust_region: 0.15            # m，每次局部线性化时预测 x/y 各自允许偏移的范围
       obstacle_iterations: 3                 # 障碍代价与安全平面重新线性化的最大迭代次数

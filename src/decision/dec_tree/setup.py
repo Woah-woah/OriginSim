@@ -26,8 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             "root=dec_tree.root:main",
-            "root_simple=dec_tree.rootsimple:main",
-            "root_radical=dec_tree.rootradical:main",
+            "root_simple=dec_tree.root_simple:main",
             "referee_fake=dec_tree.gui:main",
         ],
     },

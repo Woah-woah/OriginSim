@@ -1,9 +1,8 @@
 import py_trees
-from rclpy.node import Node
 from py_trees.common import Status
-from nav2_simple_commander.robot_navigator import BasicNavigator
 import time
 from .parameter import NAV_STATUS
+from ..nav_executor_adapter import NavExecutorAdapter
 
 
 
@@ -16,49 +15,49 @@ class Home(py_trees.behaviour.Behaviour):
         referee_condition额外附加裁判条件 为1后将条件通过字典传入\n
         interrupt为1可以打断running状态强制发送点位
     '''
-    def __init__(self, node:Node, nav: BasicNavigator, condition_func, name="home"):
+    def __init__(self, nav: NavExecutorAdapter, condition_func, name="home"):
         super().__init__("home")
         self.yaml = self.attach_blackboard_client(namespace="yaml")
         self.yaml.register_key('home',py_trees.common.Access.READ)
-        self.blackboard = self.attach_blackboard_client()
         self.yaml.register_key('blood_limit',py_trees.common.Access.READ)
         self.yaml.register_key('blood_limit',py_trees.common.Access.WRITE)
+        
+        self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key("goal",py_trees.common.Access.WRITE)
         self.blackboard.register_key("dec_now",py_trees.common.Access.WRITE)
         self.blackboard.register_key("nav_status",py_trees.common.Access.READ)
         self.blackboard.register_key("Referee",py_trees.common.Access.READ)
     
+        self.nav = nav
+        self.node = nav.node
         
         self.points = []
         self.name = "home"
         self.len = 0
         self.point_now = 0
         self.condition_func = condition_func
-        self.node = node
         self.blackboard.dec_now = None
         self.wait_until = 0           # 等待截止时间
         self.waiting = False       # 等待的原因（如 'normal' 或 'home_phase_12s'）
-        self.nav = nav
         self.bullet_remain_last=0
         self.got_bullet = False
         self.got_bullet_in_final_minute=False
         self.is_in_12s_home_wait=False         #如果回家以后距离下一次弹丸发放不足10s,就触发12s等待，拿到弹丸后打破等待
         self.home_wait_start_time = 0  # 记录进入12秒等待期的时间戳
+
     def condition(self):
         if self.condition_func(self):
             return True
         return False
+    
     def _load_points(self):
         self.points = self.yaml.__getattr__(self.name)
         self.len = len(self.points)
+
     def init_dec(self):
         self.blackboard.dec_now = self.name
         self.point_now = self.points[0]     
         self.wait_begin = False
-        while not self.nav.isTaskComplete():
-            self.nav.cancelTask()
-            self.blackboard.nav_status = NAV_STATUS.CANCELED
-
 
     def update(self):
         if not self.points:
@@ -70,8 +69,6 @@ class Home(py_trees.behaviour.Behaviour):
                 )
                 return Status.FAILURE
         # 初始条件
-
-
 
         condition= self.condition()
         self.bullet_remain_last=self.blackboard.Referee.bullet_remaining_num_17mm
@@ -99,7 +96,6 @@ class Home(py_trees.behaviour.Behaviour):
         
 
 
-
         # ---------------- START 到点决策 ----------------
 
         # 分成4种情况
@@ -116,10 +112,11 @@ class Home(py_trees.behaviour.Behaviour):
             if time.time() > self.wait_until:
               
                 self.waiting = False
-                self.blackboard.goal = self.point_pos_now
-                self.node.get_logger().info("%s: send goal x:%f y:%f" % (self.name, self.point_pos_now['x'], self.point_pos_now['y']))
+                self.blackboard.goal = self.point_now
+                self.node.get_logger().info("%s: send goal x:%f y:%f" % (self.name, self.point_now['x'], self.point_now['y']))
             else:
                 self.node.get_logger().info("waiting ...")
+
         # 正常到达目标后等待
         elif self.blackboard.nav_status == NAV_STATUS.SUCCEEDED :
 
@@ -130,16 +127,12 @@ class Home(py_trees.behaviour.Behaviour):
     
         # 默认情况：发送当前目标点
         else:
-            self.blackboard.goal = self.point_pos_now
-            self.node.get_logger().info("%s: send goal x:%f y:%f" % (self.name, self.point_pos_now['x'], self.point_pos_now['y']))
+            self.blackboard.goal = self.point_now
+            self.node.get_logger().info("%s: send goal x:%f y:%f" % (self.name, self.point_now['x'], self.point_now['y']))
 
         return Status.SUCCESS
     
         # ---------------- END 到点决策 ----------------
-
-
-
-
 
 
         #开启等待后检查等待是否结束

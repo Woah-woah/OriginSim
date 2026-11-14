@@ -3,7 +3,6 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 import py_trees_ros
 import py_trees
-from nav2_simple_commander.robot_navigator import BasicNavigator
 from rclpy.qos import QoSProfile
 from .topic_to_blackboard_node import TopicToBlackboardNode
 from .tree.CheckNavState import CheckNavState
@@ -11,7 +10,7 @@ from .tree.GetDataFromYaml import GetDataFromYaml
 from .tree.PubGoal import PubGoal
 from .tree.BasicBehaviour import Condition, IfThenElse, Patrol, Switch
 from .tree.Home import Home
-
+from .nav_executor_adapter import NavExecutorAdapter
 
 
 
@@ -67,8 +66,7 @@ def create_get_data(node,qos_profile,nav):
 
     check_nav_state = CheckNavState(
         name="check_nav_state",
-        nav=nav,
-        node=node
+        nav=nav
     )
 
     
@@ -123,7 +121,6 @@ def create_energy_tree(node, qos_profile, nav):
 
     goto_home = Home(
         name="home",
-        node=node,
         nav=nav,
         condition_func = condition_home
     )
@@ -143,8 +140,6 @@ def create_energy_tree(node, qos_profile, nav):
 
     #高地打人
     mid_attack_enemy = create_has_energy_mid_attack_tree(node,qos_profile,nav)
-
-
 
 
     energy_tree.add_children([
@@ -205,7 +200,6 @@ def create_attack_outpost_tree_has_energy(node, qos_profile, nav):
     #前往前哨站的打击点位，在敌方前哨前的位置，
     goto_outpost = Patrol(
         name="attack_outpost_has_energy",
-        node=node,
         nav=nav,
         random=0,
         points_key="outpost",
@@ -214,7 +208,6 @@ def create_attack_outpost_tree_has_energy(node, qos_profile, nav):
 
     goto_wait_point = Patrol(
         name="attack_outpost_bumpy_wait",
-        node=node,
         nav=nav,
         random=0,
         points_key="bunpy_wait",
@@ -259,7 +252,6 @@ def create_has_energy_mid_attack_tree(node, qos_profile, nav):
     # 颠簸路段后有人时停留在一级台阶前的等待点
     goto_wait_point = Patrol(
         name="mid_attack_bumpy_wait",
-        node=node,
         nav=nav,
         random=0,
         points_key="bunpy_wait",
@@ -297,7 +289,6 @@ def create_no_energy_at_home_tree(node, qos_profile, nav):
     # 回补给区
     goto_home = Home(
         name="home",
-        node=node,
         nav=nav,
         condition_func = condition_home
     )
@@ -305,7 +296,6 @@ def create_no_energy_at_home_tree(node, qos_profile, nav):
     # 在家里遛弯
     goto_somewhere_in_home = Patrol(
         name= "somewhere_in_home",
-        node=node,
         nav=nav,
         random=1,
     )
@@ -356,7 +346,6 @@ def create_no_energy_at_enemy_tree(node, qos_profile, nav):
     # 堵住台阶或者狗洞，在enemy_outlet中一个或者多个点，开始巡逻
     block_their_way = Patrol(
         name="enemy_outlet_patrol",
-        node=node,
         nav=nav,
         random=0,
         points_key="enemy_outlet",
@@ -378,7 +367,6 @@ def create_attack_outpost_tree_no_energy_in_mid(node,qos_profile,nav):
     #前往前前哨站的打击点位，在地方前哨前的位置，
     goto_outpost = Patrol(
         name="attack_outpost_no_energy_mid",
-        node=node,
         nav=nav,
         random=0,
         points_key="outpost",
@@ -499,7 +487,6 @@ def create_pilot_cmd_attack_enemy_base_subtree(node,qos_profile,nav):
     
     attack_enemy_base = Patrol(
         name="attack_base_in_their_home",
-        node=node,
         nav=nav,
         random=0,
     )
@@ -531,7 +518,6 @@ def create_pilot_cmd_attack_enemy_mid_subtree(node,qos_profile,nav):
 
     attack_mid = Patrol(
         name="attack_base_in_mid",
-        node=node,
         nav=nav,
         random=1,
     )
@@ -558,14 +544,12 @@ def create_subtree_energy_return_fortress_tree(node, qos_profile, nav):
     )
     goto_fortress_home = Patrol(
         name="energy_fortress_patrol_home",
-        node=node,
         nav=nav,
         random=0,
         points_key="fortress_when_at_home"
     )
     goto_fortress_mid = Patrol(
         name="energy_fortress_patrol_mid",
-        node=node,
         nav=nav,
         random=0,
         points_key="fortress_when_at_mid"
@@ -598,7 +582,6 @@ def create_subtree_no_energy_home_return_fortress_tree(node, qos_profile, nav):
     )
     goto_fortress_home = Patrol(
         name="no_energy_fortress_patrol_home",
-        node=node,
         nav=nav,
         random=0,
         points_key="fortress_when_at_home"
@@ -621,7 +604,6 @@ def create_subtree_no_energy_mid_return_fortress_tree(node, qos_profile, nav):
     )
     goto_fortress_mid = Patrol(
         name="no_energy_fortress_patrol_mid",
-        node=node,
         nav=nav,
         random=0,
         points_key="fortress_when_at_mid"
@@ -648,7 +630,6 @@ def create_subtree_back_to_base_tree(node, qos_profile, nav):
     # 前往我方基地的节点，专门用于基地回防（开花）
     goto_ally_base = Patrol(
         name="ally_base",
-        node=node,
         nav=nav,
         random= 0,
     )
@@ -682,7 +663,6 @@ def create_catch_and_patrol_tree(node, qos_profile, nav):
     # 前往打击英雄的点位，打击英雄的点位由雷达发出，所以random等于2
     goto_enemy_hero = Patrol(
         name="hero",
-        node=node,
         nav=nav,
         random=2,
     )
@@ -707,7 +687,6 @@ def create_catch_and_patrol_tree(node, qos_profile, nav):
     # 前往打击工程的点位，打击工程的点位由雷达发出，所以random等于2
     goto_enemy_engineer = Patrol(
         name="engineer",
-        node=node,
         nav=nav,
         random=2,
     )
@@ -719,7 +698,6 @@ def create_catch_and_patrol_tree(node, qos_profile, nav):
     # 保底-高地巡逻
     goto_mid = Patrol(
         name= "mid",
-        node=node,
         nav=nav,
         random=1
     )
@@ -778,7 +756,8 @@ def main(args = None):
     qos_profile = QoSProfile(depth=10)
     receiver_node = TopicToBlackboardNode(qos_profile=qos_profile)
     node = Node("tree_node")
-    nav = BasicNavigator()
+    
+    nav = NavExecutorAdapter(node)
     period_ms = 100
     root = create_root_tree(node, qos_profile, nav)
     tree = py_trees_ros.trees.BehaviourTree(root)
