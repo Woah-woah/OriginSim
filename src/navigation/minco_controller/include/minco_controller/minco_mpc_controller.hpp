@@ -30,7 +30,7 @@ public:
   using std::runtime_error::runtime_error;
 };
 
-// 普通导航模式下，MPC 预测运动存在碰撞风险
+// MPC 预测运动存在碰撞风险
 class PredictedCollision : public std::runtime_error
 {
 public:
@@ -49,13 +49,15 @@ public:
     const double recovery_speed = 0,
     const double recovery_acceleration = 0
   );
-  // 必须在停稳、设置 Recovery 路径后传入冻结的初始接触状态。
+  // 必须在停稳、设置 Recovery 路径后传入冻结的初始接触状态
   void setRecoveryContacts(const RecoveryContacts & contacts);
   void reset();
   void notifyZeroCommandPublished();
+
   geometry_msgs::msg::TwistStamped computeVelocityCommands(
     const geometry_msgs::msg::PoseStamped & pose,
-    const geometry_msgs::msg::Twist & measured_speed
+    const geometry_msgs::msg::Twist & measured_speed,
+    nav_msgs::msg::Path * prediction_path = nullptr         // 空指针表示不需要预测轨迹的调用方仍然可以只传两个参数
   );
 
 private:

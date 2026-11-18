@@ -12,6 +12,7 @@
 #include "minco_controller/costmap_cost.hpp"
 #include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2/LinearMath/Quaternion.h"
 
 namespace minco_controller
 {
@@ -297,18 +298,29 @@ void MincoMpcController::checkPrediction(
 
 geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   const geometry_msgs::msg::PoseStamped & pose, 
-  const geometry_msgs::msg::Twist & measured_speed)
+  const geometry_msgs::msg::Twist & measured_speed,
+  nav_msgs::msg::Path * prediction_path)    // 是一个指针
 {
+  if (prediction_path) {     // 判断调用者是否传入了有效指针地址
+    *prediction_path = nav_msgs::msg::Path{};    // 这会将调用者提供的 Path 重置为空消息，避免一次调用失败后仍然保留上次计算出的旧预测序列
+  }
+
   RecoveryTimer mpc_timer(RecoveryMetric::MPC);
   recoveryStage("mpc_setup");
   const auto node = node_.lock();
-  if (!node || !solver_ || trajectory_.empty()) {throw std::logic_error("局部控制器尚未就绪，或没有可执行路径");}
-  if (pose.header.frame_id != costmap_->getGlobalFrameID() || !finitePose(pose.pose) ||
-    !Eigen::Vector3d(measured_speed.linear.x, measured_speed.linear.y,
-      measured_speed.angular.z).allFinite())
+
+  if (!node || !solver_ || trajectory_.empty()) {
+    throw std::logic_error("局部控制器尚未就绪，或没有可执行路径");
+  }
+
+  if (pose.header.frame_id != costmap_->getGlobalFrameID() 
+  || !finitePose(pose.pose) 
+  || !Eigen::Vector3d(measured_speed.linear.x, measured_speed.linear.y, measured_speed.angular.z).allFinite())
   {
     throw std::invalid_argument("局部控制器收到无效位姿、坐标系或实测速度");
   }
+
+
   const double yaw = tf2::getYaw(pose.pose.orientation);
   const double c = std::cos(yaw), s = std::sin(yaw);
   // PathExecutor already transformed the odometry child frame and lever arm
@@ -320,17 +332,26 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   current.vx = c * measured_speed.linear.x - s * measured_speed.linear.y;
   current.vy = s * measured_speed.linear.x + c * measured_speed.linear.y;
   current.omega = measured_speed.angular.z;
+  
   const auto last_command = solver_->getLastControl();
+  
   int axis = 0;
+  
   for (auto * value : {&current.vx, &current.vy, &current.omega}) {
     // Suppress stationary odometry noise, but keep legitimate low-speed motion
     // once commanded. Otherwise a=1.5, dt=0.02 stalls at the 0.03 noise threshold.
-    if (!recovery_mode_ && std::abs(*value) < velocity_noise_threshold_ &&
-      std::abs(last_command[axis]) < deadzone_) {*value = 0.0;}
+    if (!recovery_mode_ && 
+      std::abs(*value) < velocity_noise_threshold_ &&
+      std::abs(last_command[axis]) < deadzone_) 
+    {
+        *value = 0.0;
+    }
     ++axis;
   }
+
   const State observed = current;
   // 名义执行延迟取配置值；实际延迟未标定时，另以 [0, delay] 安全包络保护。
+  
   if (control_delay_ > 0.0) {
     current.x += current.vx * control_delay_;
     current.y += current.vy * control_delay_;
@@ -338,15 +359,20 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   }
   auto transform = geometry_msgs::msg::TransformStamped{};
   transform.transform.rotation.w = 1.0;
+  
   if (plan_frame_ != pose.header.frame_id) {
-    transform = costmap_->getTfBuffer()->lookupTransform(
-      pose.header.frame_id, plan_frame_, tf2::TimePointZero);
+    transform = costmap_->getTfBuffer()->lookupTransform(pose.header.frame_id, plan_frame_, tf2::TimePointZero);
   }
+  
   if (std::abs(transform.transform.rotation.x) > 1e-3 ||
     std::abs(transform.transform.rotation.y) > 1e-3)
-  {throw std::runtime_error("路径与局部地图之间必须使用平面坐标变换");}
+  {
+    throw std::runtime_error("路径与局部地图之间必须使用平面坐标变换");
+  }
+
   const double offset = tf2::getYaw(transform.transform.rotation);
   const double ct = std::cos(offset), st = std::sin(offset);
+  
   const double tx = transform.transform.translation.x, ty = transform.transform.translation.y;
   State in_plan = observed;
   in_plan.x = ct * (observed.x - tx) + st * (observed.y - ty);
@@ -355,7 +381,9 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   progress_time_ = trajectory_.nearestTime(in_plan, progress_time_);
   std::vector<ReferencePoint> reference;
   reference.reserve(config_.horizon);
+  
   double previous_yaw = current.yaw;
+  
   for (int k = 0; k < config_.horizon; ++k) {
     auto point = trajectory_.sample(progress_time_ + control_delay_ + (k + 1) * config_.dt);
     const auto position = point.pos.eval();
@@ -430,9 +458,9 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
       RCLCPP_WARN(node->get_logger(), "延迟预测位姿＋车体轮廓：%s；位姿=(%.6f,%.6f,%.6f)",
         diagnose(current).c_str(), current.x, current.y, current.yaw);
     } catch (const std::exception & error) {
-      RCLCPP_ERROR(node->get_logger(), "轮廓诊断未完成：%s；仍按原触发原因停车：%s",
-        error.what(), trigger.what());
+      RCLCPP_ERROR(node->get_logger(), "轮廓诊断未完成：%s；仍按原触发原因停车：%s", error.what(), trigger.what());
     }
+    
     throw;
   }
 
@@ -553,6 +581,31 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   command.twist.linear.x = c * control.vx + s * control.vy;
   command.twist.linear.y = -s * control.vx + c * control.vy;
   command.twist.angular.z = control.omega;
+
+  // mpc 预测序列可视化
+  if (prediction_path && prediction.size() > 1) {
+    prediction_path->header.frame_id = pose.header.frame_id;
+    prediction_path->header.stamp = command.header.stamp;
+
+    prediction_path->poses.reserve(prediction.size() - 1);
+
+    for (size_t i = 1; i < prediction.size(); ++i) {    // 索引 0 是预测前的观测状态，我要延迟补偿后的 mpc 预测
+      geometry_msgs::msg::PoseStamped sample;
+
+      sample.header = prediction_path->header;
+
+      sample.pose.position.x = prediction[i].x;
+      sample.pose.position.y = prediction[i].y;
+      sample.pose.position.z = pose.pose.position.z;
+
+      tf2::Quaternion q;
+      q.setRPY(0.0, 0.0, prediction[i].yaw);
+      sample.pose.orientation = tf2::toMsg(q);   // 还可以输出mpc预测的车体朝向
+
+      prediction_path->poses.push_back(sample);
+    }
+  }
+
   return command;  // Only PathExecutor publishes the command.
 }
 }  // namespace minco_controller

@@ -6,7 +6,6 @@ map_server:
     footprint_frame: base_link_fake
     robot_radius: 0.15
     footprint: ''
-    footprint_padding: 0.01
     track_unknown_space: true
     inflation_radius: 1.1
     cost_scaling_factor: 5.0                # 越大则代价衰减越快
@@ -54,7 +53,6 @@ map_client:
     footprint_frame: base_link_fake
     robot_radius: 0.15
     footprint: ''
-    footprint_padding: 0.01
     track_unknown_space: true
     inflation_radius: 1.1
     cost_scaling_factor: 5.0
@@ -98,16 +96,16 @@ nav_executor:
         confirmations: 3         # 连续多个新地图快照均判为阻塞，才触发重规划
         maximum_sample_gap: 1.0  # s，检查间隔超过此值则重置连续证据，避免把断流算作持续异常
     path_smoother:
-      enabled: true            # 全路径联合 Minimum Jerk 平滑，失败安全回退
+      enabled: false            # 全路径联合 Minimum Jerk 平滑，失败安全回退
       timeout: 0.3             # s，受全局规划总超时共同限制
       control_spacing: 0.4     # m，短共线控制点合并间距
-      corridor_range: 0.7      # m，方形安全走廊最大范围
+      corridor_range: 0.4      # m，方形安全走廊最大范围
       max_speed: 2.5           # m/s，仅用于时间分配
       max_acceleration: 2.2    # m/s^2，仅用于时间分配
       collision_iterations: 6  # 平滑后碰撞复检与约束修正的最大迭代次数
       topology_iterations: 3   # 平滑后拓扑约束复检与修正的最大迭代次数
     connector_executor:
-      enabled: false
+      enabled: true
       region_half_width: 1.2  # 矩形半宽
       entry_extension: 1.0    # 入口前面
       exit_extension: 0.3     # 出口后面
@@ -125,17 +123,17 @@ nav_executor:
       dt: 0.02                               # s，MPC 预测步长；需与控制频率一起考虑
       horizon: 25                            # 预测步数；当前预测时域为 25 × 0.02 = 0.5 s
       Q: [9.0, 9.0, 2.0]                     # 状态误差权重 [x, y, yaw]；当前平移项由 q_along/q_cross 替代，仅 yaw 项生效
-      R: [1.0, 1.0, 0.5]                     # 速度前馈偏差权重 [vx, vy, wz]，越大越倾向参考速度
+      R: [3.0, 3.0, 0.5]                     # 速度前馈偏差权重 [vx, vy, wz]，越大越倾向参考速度
       control_delta_weight: [2.0, 2.0, 0.5]  # 相邻控制量变化权重 [vx, vy, wz]，抑制速度突变
       q_along: 9.0                           # 沿路径切线方向的位置误差权重，与车头朝向无关
       q_cross: 9.0                           # 垂直于路径切线方向的位置误差权重，与车头朝向无关
       obstacle_weight: 30.0                  # EDT 障碍软代价权重；不能替代 Footprint 硬碰撞检查
       obstacle_trust_region: 0.15            # m，每次局部线性化时预测 x/y 各自允许偏移的范围
       obstacle_iterations: 3                 # 障碍代价与安全平面重新线性化的最大迭代次数
-      vx_min: -2.6
-      vx_max: 2.6
-      vy_min: -2.6
-      vy_max: 2.6
+      vx_min: -2.0
+      vx_max: 2.0
+      vy_min: -2.0
+      vy_max: 2.0
       omega_min: -2.0
       omega_max: 2.0
       use_acc_constraints: true              # 舵轮起步必须满足下方加速度约束，避免首次起步冲击
@@ -147,7 +145,7 @@ nav_executor:
       alpha_max: 4.0
       max_working_set_recalculations: 200    # qpOASES 单次求解的工作集重计算次数上限
       eps_regularization: 1.0e-09            # QP 数值正则化系数，用于改善矩阵数值稳定性
-      reference_speed: 1.8                   # m/s，参考轨迹速度上限；不是直接发布的速度指令
+      reference_speed: 1.4                   # m/s，参考轨迹速度上限；不是直接发布的速度指令
       reference_acceleration: 1.0            # m/s²，参考轨迹时间参数化的加速度上限
       reference_yaw_rate: 1.0                # rad/s，参考轨迹转向速度上限；小陀螺模式角速度由 fixed_wz 指定
       control_delay_compensation: 0.01        # 从当前预测时刻算出速度，实际上会过多少时间才会将速度发出去
@@ -163,7 +161,7 @@ topology_planner:
   ros__parameters:
     use_sim_time: true
     TopoPlanner:
-      use_topology: false
+      use_topology: true
       topology_yaml: "topo26.yaml"
       allow_nearest_region_fallback: false  # 起终点不属于任何区域时，是否允许选择最近区域
       region_boundary_tolerance: 0.03       # m，识别点是否位于 Region 边界时的容差

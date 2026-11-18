@@ -105,4 +105,4 @@ bool pathIsClear(
   }
   return !findPathObstacle(path, grid, radius);
 }
-} // 命名空间 nav_executor
+} // namespace nav_executor

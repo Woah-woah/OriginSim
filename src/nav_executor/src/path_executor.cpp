@@ -124,11 +124,13 @@ public:
     if (!std::isfinite(recovery_alpha_) || recovery_alpha_ <= 0) {
       throw std::invalid_argument("Recovery 需要有效角减速度限制");
     }
-    const auto debug_qos = rclcpp::QoS(1).reliable().transient_local();
-    recovery_markers_ = node->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "nav_executor/recovery_candidates", debug_qos);
-    recovery_path_pub_ = node->create_publisher<nav_msgs::msg::Path>(
-      "nav_executor/recovery_path", debug_qos);
+
+    const auto debug_qos = rclcpp::QoS(1).reliable().transient_local();  // transient_local()，意味着发布器会保留最近一条消息，允许后续加入的订阅者收到它
+    
+    recovery_markers_ = node->create_publisher<visualization_msgs::msg::MarkerArray>("nav_executor/recovery_candidates", debug_qos);
+    recovery_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("nav_executor/recovery_path", debug_qos);
+    mpc_prediction_pub_ = node->create_publisher<nav_msgs::msg::Path>("nav_executor/mpc_prediction_path", rclcpp::QoS(1).reliable());
+
     // 输入接收独立于控制定时器，任务与控制器状态仍由默认回调组修改
     odom_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     rclcpp::SubscriptionOptions odom_options;
@@ -168,16 +170,23 @@ public:
     timer_ = rclcpp::create_timer(node->get_node_base_interface(),
       node->get_node_timers_interface(), clock_, rclcpp::Duration::from_seconds(1.0 / frequency_),
       [this]() {tick();});
-    watchdog_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    watchdog_ = node->create_wall_timer(std::chrono::duration<double>(1.0 / frequency_), [this]() {
+   
+      watchdog_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+   
+      watchdog_ = node->create_wall_timer(std::chrono::duration<double>(1.0 / frequency_), [this]() {
+      
       std::lock_guard<std::mutex> lock(command_mutex_);
+      
       if (drive_active_ && std::chrono::duration<double>(TaskManager::Clock::now() - command_at_).count() > control_timeout_) {
+        
         const double ros_age = (clock_->now().nanoseconds() - command_ros_ns_) * 1e-9;
-        const bool clock_paused = clock_->ros_time_is_active() &&
-          (ros_age < control_timeout_ || ros_age < 0);
+        const bool clock_paused = clock_->ros_time_is_active() && (ros_age < control_timeout_ || ros_age < 0);
+        
         drive_active_ = false;
         zero_command_published_ = true;
         cmd_pub_->publish(geometry_msgs::msg::Twist{});
+        clearMpcPrediction();
+
         if (clock_paused) {
           RCLCPP_WARN(logger_, "仿真时钟暂停、变慢或重置，已发布零速，等待时钟和输入恢复");
         } else {
@@ -196,12 +205,27 @@ public:
     publishZero();
   }
 
+  void clearMpcPrediction()
+  {
+    if (!mpc_prediction_pub_ || !mpc_prediction_frame_) {
+      return;
+    }
+
+    nav_msgs::msg::Path empty_path;
+    empty_path.header.frame_id = *mpc_prediction_frame_;
+
+    mpc_prediction_pub_->publish(empty_path);
+    mpc_prediction_frame_.reset();
+  }
+
   void publishZero()
   {
     std::lock_guard<std::mutex> lock(command_mutex_);
     drive_active_ = false;
     zero_command_published_ = true;
     cmd_pub_->publish(geometry_msgs::msg::Twist{});
+
+    clearMpcPrediction();
   }
 
   void emergencyStop()
@@ -211,6 +235,8 @@ public:
     drive_active_ = false;
     zero_command_published_ = true;
     cmd_pub_->publish(geometry_msgs::msg::Twist{});
+
+    clearMpcPrediction();
   }
 
   void clearEmergencyStop()
@@ -219,15 +245,30 @@ public:
     emergency_stop_ = false;
   }
 
-  void publishCommand(const geometry_msgs::msg::Twist & command)
+  void publishCommand(
+    const geometry_msgs::msg::Twist & command,
+    const nav_msgs::msg::Path * prediction_path = nullptr)
   {
     std::lock_guard<std::mutex> lock(command_mutex_);
+
     command_at_ = TaskManager::Clock::now();
     command_ros_ns_ = clock_->now().nanoseconds();
-    drive_active_ = !emergency_stop_ && (std::hypot(command.linear.x, command.linear.y) > 0 ||
-      std::abs(command.angular.z) > 0);
+
+    drive_active_ = !emergency_stop_ &&
+      (std::hypot(command.linear.x, command.linear.y) > 0 || std::abs(command.angular.z) > 0);
+
     zero_command_published_ = !drive_active_;
+
     cmd_pub_->publish(emergency_stop_ ? geometry_msgs::msg::Twist{} : command);
+
+    // 发布本周期 MPC 预测轨迹
+    if (mpc_prediction_pub_ && !emergency_stop_ && prediction_path && !prediction_path->poses.empty())
+    {
+      mpc_prediction_frame_ = prediction_path->header.frame_id;
+      mpc_prediction_pub_->publish(*prediction_path);
+    } else {
+      clearMpcPrediction();
+    }
   }
 
   void stop(const std::string & reason)
@@ -701,8 +742,12 @@ public:
     recovery_still_since_.reset();
 
     // 交给 MPC 计算速度
-    if (zero_command_published_) {controller_.notifyZeroCommandPublished();}
-    auto output = controller_.computeVelocityCommands(pose, speed).twist;
+    if (zero_command_published_) {
+      controller_.notifyZeroCommandPublished();
+    }
+    nav_msgs::msg::Path predicted_path;
+    auto output = controller_.computeVelocityCommands(pose, speed, &predicted_path).twist;
+
 
     // 检查 MPC 输出
     double output_speed = std::hypot(output.linear.x, output.linear.y);
@@ -739,7 +784,7 @@ public:
     {throw std::runtime_error("Recovery 输入失效、地图生产端重启或控制超时");}
 
     recovery_command_speed_ = output_speed;
-    publishCommand(output);
+    publishCommand(output, &predicted_path);
     if (auto * profile = minco_controller::active_recovery_profile) {profile->published = true;}
     minco_controller::recoveryStage("published");
   }
@@ -899,15 +944,22 @@ public:
         }
         return;
       }
+
       const auto grid = costmap_->view();
       if (!costmap_->isCurrent(*grid) || !grid->cell({pose.pose.position.x, pose.pose.position.y})) {
         throw std::runtime_error("机器人位置超出可用地图或地图已过期");
       }
+
       const auto began = TaskManager::Clock::now();
-      if (zero_command_published_) {controller_.notifyZeroCommandPublished();}
+      if (zero_command_published_) {
+        controller_.notifyZeroCommandPublished();
+      }
+
+      nav_msgs::msg::Path predicted_path;
+      auto output = controller_.computeVelocityCommands(pose, speed, &predicted_path).twist;   // 正常导航是twiststamped, 这里只取twist
+
       auto command = controller_.computeVelocityCommands(pose, speed);
-      if (std::chrono::duration<double>(TaskManager::Clock::now() - began).count() >
-            control_timeout_ ||
+      if (std::chrono::duration<double>(TaskManager::Clock::now() - began).count() >control_timeout_ ||
           !finiteTwist(command.twist))
       {
         throw std::runtime_error("控制器输出无效，或本次求解超过允许时间");
@@ -942,7 +994,7 @@ public:
         throw std::runtime_error("控制指令发布前已超时，拒绝发布速度");
       }
       map_update_since_.reset();
-      publishCommand(command.twist);
+      publishCommand(command.twist, &predicted_path);
     } catch (const minco_controller::MapChanged & exception) {
       if (recovery_phase_ != RecoveryPhase::NONE) {
         publishZero();
@@ -1002,11 +1054,16 @@ public:
   double recovery_command_speed_{0.0};
   Eigen::Vector2d recovery_progress_anchor_{0, 0};
   std::vector<Eigen::Vector2d> recovery_endpoints_;
+  
   TaskManager::Clock::time_point recovery_started_, recovery_phase_started_, recovery_progress_at_;
   std::optional<TaskManager::Clock::time_point> recovery_still_since_;
   std::optional<TaskManager::Clock::time_point> recovery_overspeed_since_;
+  
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr recovery_markers_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr recovery_path_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_prediction_pub_;
+  std::optional<std::string> mpc_prediction_frame_;      // 最近一次发布的预测轨迹属于哪个坐标系
+
   bool drive_active_{false};
   TaskManager::Clock::time_point command_at_{};
   int64_t command_ros_ns_{0};
@@ -1091,4 +1148,4 @@ ExecutionState PathExecutor::state() const
 {
   return impl_->state_;
 }
-} // 命名空间 nav_executor
+} // namespace nav_executor

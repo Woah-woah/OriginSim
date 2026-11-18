@@ -28,6 +28,7 @@
 #include "std_msgs/msg/u_int64.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "visualization_msgs/msg/marker.hpp"
 #include "topology_global_planner/topology_global_planner.hpp"
 #include "yaml-cpp/yaml.h"
 
@@ -39,7 +40,7 @@ void requestShutdown(int)
 {
   shutdown_requested = 1;
 }
-} // 匿名命名空间
+} // namespace
 
 namespace nav_executor
 {
@@ -155,10 +156,14 @@ public:
       throw std::invalid_argument("planning_timeout > 0 and 0 < tick_frequency <= 1000 required");
     }
     global_frame_ = costmap_->getGlobalFrameID();
+    
     const auto qos = rclcpp::QoS(1).reliable().transient_local();
     path_pub_ = create_publisher<nav_msgs::msg::Path>("plan", qos);
     original_path_pub_ = create_publisher<nav_msgs::msg::Path>("plan_original", qos);
     smoothed_path_pub_ = create_publisher<nav_msgs::msg::Path>("plan_smoothed", qos);
+    footprint_pub_ = create_publisher<visualization_msgs::msg::Marker>("/nav_executor/footprint", rclcpp::QoS(1).reliable());
+
+    
     minimum_jerk_smoother::Config smoother_config;
     declare_parameter("path_smoother.enabled", true);
     smoother_config.timeout = declare_parameter("path_smoother.timeout", 0.3);
@@ -430,20 +435,23 @@ public:
         response->success = true;
         response->message = "Task cancelled";
       });
+    
     replan_srv_ = create_service<std_srvs::srv::Trigger>("nav_executor/replan",
-      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
-        std_srvs::srv::Trigger::Response::SharedPtr response) {
-        response->success = tasks_.replan();
-        response->message = response->success ? "Replan requested" : "No active goal";
-        if (response->success) {
-          if (executor_) {
-            executor_->stop("Replan requested");
-          }
-          worker_->invalidate(tasks_.generation());
-          publishTask();
+    [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+      std_srvs::srv::Trigger::Response::SharedPtr response) {
+      response->success = tasks_.replan();
+      response->message = response->success ? "Replan requested" : "No active goal";
+      if (response->success) {
+        if (executor_) {
+          executor_->stop("Replan requested");
         }
-      });
+        worker_->invalidate(tasks_.generation());
+        publishTask();
+      }
+    });
+  
     emergency_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    
     emergency_srv_ = create_service<std_srvs::srv::Trigger>(
       "nav_executor/emergency_stop",
       [this](const std_srvs::srv::Trigger::Request::SharedPtr,
@@ -459,8 +467,8 @@ public:
       },
       rclcpp::ServicesQoS(),
       emergency_group_);
-    reset_emergency_srv_ =
-      create_service<std_srvs::srv::Trigger>("nav_executor/reset_emergency_stop",
+    
+      reset_emergency_srv_ = create_service<std_srvs::srv::Trigger>("nav_executor/reset_emergency_stop",
         [this](const std_srvs::srv::Trigger::Request::SharedPtr,
           std_srvs::srv::Trigger::Response::SharedPtr response) {
           std::lock_guard<std::mutex> lock(emergency_mutex_);
@@ -472,15 +480,23 @@ public:
           response->success = true;
           response->message = "Emergency stop cleared; task cancelled, submit a new goal";
         });
-    tick_ = create_wall_timer(std::chrono::duration<double>(1.0 / tick_frequency), [this, local_costmap]() {
+
+    tick_ = create_wall_timer(std::chrono::duration<double>(1.0 / tick_frequency), [this, local_costmap]() 
+    {
+      publishFootprint();
+
       const auto now = TaskManager::Clock::now();
+      
       if (emergency_stop_requested_.exchange(false)) {
         cancelForEmergency();
       }
+      
       geometry_msgs::msg::PoseStamped pose;
       const bool pose_available = costmap_->getRobotPose(pose);
+     
       updateConnector(pose_available ? &pose : nullptr, now);
       checkPathBlocked(now, pose_available ? &pose : nullptr);
+      
       if (auto result = worker_->takeResult()) {
         const bool current_result = result->identity == tasks_.identity();
         auto original_path = result->original_path;
@@ -494,25 +510,29 @@ public:
           }
         }
         // 起点净空不足也可能没有实际轮廓接触；用明确错误类型和位置确认，不匹配日志字符串。
+        
         if (current_result && (!result->error.empty() || result->plan.full_path.poses.empty()) &&
           get_parameter("recovery.enabled").as_bool())
         {
           try {
             const auto grid = local_costmap->view();
             geometry_msgs::msg::PoseStamped start;
+
             if (local_costmap->isCurrent(*grid) && local_costmap->getRobotPose(start)) {
               const auto footprint = local_costmap->footprintInBaseFrame(start.header.stamp);
-              const minco_controller::TrajectorySafety safety(*grid, footprint,
-                get_parameter("MPC.collision_margin").as_double());
+              const minco_controller::TrajectorySafety safety(*grid, footprint, get_parameter("MPC.collision_margin").as_double());
+              
               minco_controller::State observed;
               observed.x = start.pose.position.x;
               observed.y = start.pose.position.y;
               observed.yaw = tf2::getYaw(start.pose.orientation);
+              
               const int contacts = safety.collisionCellCount(observed);
               const bool start_blocked = result->blocked_start &&
                 result->blocked_start->header.frame_id == start.header.frame_id &&
                 std::hypot(result->blocked_start->pose.position.x - observed.x,
                   result->blocked_start->pose.position.y - observed.y) <= grid->geometry().resolution;
+              
               if (contacts >= 0 && (contacts > 0 || start_blocked)) {
                 result->recovery_start = start;
                 RCLCPP_WARN(get_logger(),
@@ -523,11 +543,13 @@ public:
                   "规划失败未触发 Recovery：实际接触=%d，起点阻塞位置匹配=%s",
                   contacts, start_blocked ? "是" : "否");
               }
+
             }
           } catch (const std::exception & error) {
             RCLCPP_WARN(get_logger(), "无法确认起点碰撞，保持规划失败处理：%s", error.what());
           }
         }
+
         if (tasks_.accept(std::move(*result), now)) {
           if (current_result && tasks_.state() == TaskState::PATH_READY) {
             original_path_pub_->publish(original_path);
@@ -678,6 +700,61 @@ private:
     tasks_.cancel();
     worker_->invalidate(tasks_.generation());
     publishTask();
+  }
+
+  void publishFootprint()
+  {
+    if (!footprint_pub_) {
+      return;
+    }
+
+    try {
+      // 获取与 MPC 碰撞检测一致的车体轮廓
+      const auto footprint = costmap_->footprintInBaseFrame();
+
+      if (footprint.size() < 3) {
+        return;
+      }
+
+      visualization_msgs::msg::Marker marker;
+
+      // Footprint 已经转换到机器人控制基坐标系
+      marker.header.frame_id = costmap_->getBaseFrameID();
+      marker.header.stamp = now();
+
+      marker.ns = "robot_footprint";
+      marker.id = 0;
+      marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+
+      marker.pose.orientation.w = 1.0;
+
+      // 轮廓线宽：2 cm
+      marker.scale.x = 0.02;
+
+      // 绿色轮廓
+      marker.color.r = 0.0;
+      marker.color.g = 1.0;
+      marker.color.b = 0.4;
+      marker.color.a = 1.0;
+
+      // 使用 TF 更新轮廓在地图中的位置
+      marker.frame_locked = true;
+
+      // 将 Footprint 顶点加入 Marker
+      marker.points = footprint;
+
+      // LINE_STRIP 需要手动闭合多边形
+      marker.points.push_back(footprint.front());
+
+      marker.lifetime = rclcpp::Duration::from_seconds(0.25);   // 避免停止发布后保留过期轮廓
+
+      footprint_pub_->publish(marker);
+    }
+
+    catch (const std::exception & e) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Footprint 可视化失败：%s", e.what());
+    }
   }
 
   void dispatchPath()
@@ -923,10 +1000,13 @@ private:
   double smoothing_body_radius_{0.0};
   std::unique_ptr<PathExecutor> executor_;
   std::unique_ptr<RouteMonitor> monitor_;
+
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr original_path_pub_, smoothed_path_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr segment_pub_, state_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr goal_id_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr footprint_pub_;
+
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr cancel_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr replan_srv_;
@@ -934,39 +1014,48 @@ private:
 };
 } // namespace nav_executor
 
+
+
 int main(int argc, char ** argv)
 {
   // 先停止规划线程再关闭通信，避免默认信号处理提前销毁上下文
   rclcpp::init(argc, argv, rclcpp::InitOptions{}, rclcpp::SignalHandlerOptions::None);
   std::signal(SIGINT, requestShutdown);
   std::signal(SIGTERM, requestShutdown);
+
   int exit_code = 0;
+  
   try {
     auto config = std::make_shared<rclcpp::Node>("nav_executor");
     const auto params_file = config->declare_parameter("navigation_params_file", std::string{});
     const bool use_sim_time = config->get_parameter("use_sim_time").as_bool();
     config.reset();
-    auto global = std::make_shared<map_server::MapClient>("navigation_map_client",
-      nav_executor::mapClientOptions(params_file, "map_client", use_sim_time));
+    
+    auto global = std::make_shared<map_server::MapClient>("navigation_map_client", nav_executor::mapClientOptions(params_file, "map_client", use_sim_time));
     auto local = global;  // 所有消费者共享一个不可变地图接收器，不分别订阅不同时间的地图。
     auto node = std::make_shared<nav_executor::NavExecutor>(global, local);
+    
     node->initializeExecutor(local);
     // 控制计算期间独立接收里程计与快照，默认回调组串行处理任务和控制接口
+    
     rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 4);
     executor.add_node(global);
     executor.add_node(node);
     auto spinning = std::async(std::launch::async, [&executor]() {
       executor.spin();
     });
+    
     while (rclcpp::ok() && !shutdown_requested &&
            spinning.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready)
     {
     }
+    
     executor.cancel();
     spinning.get();
     executor.remove_node(node);
     node.reset(); // 先停止规划再销毁订阅端栅格
     executor.remove_node(global);
+  
   } catch (const std::exception & exception) {
     RCLCPP_ERROR(rclcpp::get_logger("nav_executor"), "%s", exception.what());
     exit_code = 1;
